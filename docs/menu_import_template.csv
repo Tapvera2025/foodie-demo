@@ -1,0 +1,8 @@
+category,category_order,item_name,item_order,description,price_inr,tax_rate_pct,dietary,is_available,external_item_id,variant_group,variant_min,variant_max,variant_options,addon_group,addon_min,addon_max,addon_options,image_filename
+Starters,1,Veg Manchurian,1,Crispy vegetable balls in a spicy garlic sauce,180.00,5,VEG,yes,,Portion,1,1,Half:0|Full:90,Extra spice,0,1,Extra spicy:0,veg_manchurian.jpg
+Starters,1,Chicken 65,2,South Indian style fried chicken with curry leaves,240.00,5,NON_VEG,yes,,Portion,1,1,Half:0|Full:120,,,,,chicken_65.jpg
+Main Course,2,Paneer Butter Masala,1,Cottage cheese in a rich tomato and cashew gravy,260.00,5,VEG,yes,,,,,,Add-ons,0,3,Extra gravy:40|Butter naan:45|Jeera rice:120,paneer_butter_masala.jpg
+Main Course,2,Jain Dal Tadka,2,Yellow dal tempered without onion or garlic,190.00,5,JAIN,yes,,,,,,Add-ons,0,2,Plain rice:90|Roti:20,
+Breads,3,Butter Naan,1,,45.00,5,VEG,yes,,,,,,,,,,
+Beverages,4,Masala Chai,1,,30.00,5,VEG,yes,,Size,1,1,Regular:0|Large:15,,,,,
+Beverages,4,Fresh Lime Soda,2,,60.00,12,VEG,no,,Type,1,1,Sweet:0|Salted:0|Mixed:0,,,,,

@@ -1,0 +1,1513 @@
+openapi: 3.1.0
+
+info:
+  title: Food Court QR Ordering Platform API
+  version: 1.0.0-pilot
+  description: |
+    Companion to PRD v5.1 and the Technical Design Document.
+
+    ## Conventions
+
+    * **Money** is always an integer in paise (`int64`). There is no decimal or
+      float representation of money anywhere in this API. `25000` means ₹250.00.
+    * **Timestamps** are RFC 3339 UTC.
+    * **IDs** are UUIDv4 unless stated otherwise.
+    * **Idempotency**: any endpoint that moves money or creates an order requires
+      an `Idempotency-Key` header. Replaying a key returns the original result
+      with `200` rather than creating a second resource. A missing key on such an
+      endpoint is a `400`, never a silently created order. (PRD API-01)
+    * **Correlation**: clients may send `X-Correlation-Id`. If absent the server
+      generates one and returns it on every response. It spans
+      API to payment to order to dispatch to notification. (PRD POS-02)
+    * **Errors** all use the `Problem` schema. Business failures are typed via
+      `code`, never inferred from the HTTP status alone.
+    * **Tenant isolation** is applied server-side on every request. A resource
+      belonging to another tenant returns `404`, never `403`, so existence is not
+      leaked. (PRD RBAC-01)
+    * **Order status is never writable.** Transitions happen only through the
+      named command endpoints under `/orders/{orderId}/…`. (PRD API-02)
+  contact:
+    name: Tapvera Technologies Pvt Ltd
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.tapvera.example/v1
+    description: Production
+  - url: https://staging-api.tapvera.example/v1
+    description: Staging
+
+tags:
+  - name: Session
+    description: QR resolution and session lifecycle. Unauthenticated.
+  - name: Discovery
+    description: Vendor and menu browsing. Session-scoped.
+  - name: Cart
+  - name: Checkout
+  - name: Payment
+  - name: Order (customer)
+  - name: KDS
+    description: Vendor device surface. Device-authenticated.
+  - name: Manager
+  - name: Admin
+  - name: Public
+    description: Unauthenticated read-only surfaces such as the ready board.
+  - name: Webhooks
+    description: Inbound provider callbacks. Signature-verified.
+
+security:
+  - sessionToken: []
+
+paths:
+  # ==================================================================
+  # SESSION
+  # ==================================================================
+  /qr/{token}:
+    get:
+      tags: [Session]
+      operationId: resolveQrToken
+      security: []
+      summary: Resolve a table QR token to a food-court context
+      description: |
+        PRD CUS-QR-01/02. The token is opaque and non-enumerable. An invalid,
+        expired or deactivated token returns `404` with a `code` the client maps
+        to the recovery screen — never a blank page.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string, minLength: 22, maxLength: 64 }
+      responses:
+        '200':
+          description: Resolved context
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QrContext' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /sessions:
+    post:
+      tags: [Session]
+      operationId: createSession
+      security: []
+      summary: Create or resume a session for a table
+      description: PRD CUS-SES-01/02. Anonymous. No identity is collected here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qrToken]
+              properties:
+                qrToken: { type: string }
+                deviceFingerprint: { type: string, nullable: true }
+                resumeSessionId:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: Present on refresh or reconnect.
+      responses:
+        '201':
+          description: Session created or resumed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionCreated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /sessions/{sessionId}:
+    get:
+      tags: [Session]
+      operationId: getSession
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: Session state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ==================================================================
+  # DISCOVERY
+  # ==================================================================
+  /food-courts/{foodCourtId}/vendors:
+    get:
+      tags: [Discovery]
+      operationId: listVendors
+      summary: List vendors in the active food court
+      description: |
+        PRD CUS-VEN-01/02/03. `orderable` is derived at read time from
+        configured hours, temporary closure **and KDS heartbeat freshness**.
+        A vendor whose device has been silent past the threshold is returned
+        with `orderable: false` and `unavailableReason: DEVICE_OFFLINE`.
+      parameters:
+        - name: foodCourtId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Vendor list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vendors:
+                    type: array
+                    items: { $ref: '#/components/schemas/VendorSummary' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /vendors/{vendorId}/menu:
+    get:
+      tags: [Discovery]
+      operationId: getVendorMenu
+      parameters: [{ $ref: '#/components/parameters/VendorId' }]
+      responses:
+        '200':
+          description: |
+            Normalised menu. `stale: true` means the POS source was unreachable
+            and this is cached data (PRD CUS-MENU-05); the client must show a
+            freshness indicator but ordering continues.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Menu' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ==================================================================
+  # CART
+  # ==================================================================
+  /carts:
+    post:
+      tags: [Cart]
+      operationId: createCart
+      summary: Create a cart bound to exactly one vendor
+      description: |
+        PRD CUS-CART-01. A cart is permanently bound to one vendor. Selecting a
+        different vendor replaces the cart; it never mixes. Enforced by a
+        database trigger, not only here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, vendorId]
+              properties:
+                sessionId: { type: string, format: uuid }
+                vendorId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Cart created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '409':
+          description: A cart already exists for this session with a different vendor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /carts/{cartId}:
+    get:
+      tags: [Cart]
+      operationId: getCart
+      parameters: [{ $ref: '#/components/parameters/CartId' }]
+      responses:
+        '200':
+          description: Cart with server-computed pricing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Cart]
+      operationId: deleteCart
+      parameters: [{ $ref: '#/components/parameters/CartId' }]
+      responses:
+        '204': { description: Cart discarded }
+
+  /carts/{cartId}/items:
+    post:
+      tags: [Cart]
+      operationId: addCartItem
+      description: |
+        PRD CUS-MENU-02. Option selections are validated against each group's
+        `minSelect`/`maxSelect`. An invalid combination is rejected here as well
+        as client-side.
+      parameters: [{ $ref: '#/components/parameters/CartId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CartItemInput' }
+      responses:
+        '200':
+          description: Updated cart
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '409':
+          description: Item belongs to a different vendor, or is out of stock.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: Option selection violates a group rule.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /carts/{cartId}/items/{cartItemId}:
+    patch:
+      tags: [Cart]
+      operationId: updateCartItem
+      parameters:
+        - { $ref: '#/components/parameters/CartId' }
+        - name: cartItemId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                quantity:
+                  { type: integer, minimum: 0, maximum: 50, description: '0 removes the line.' }
+                instructions: { type: string, maxLength: 200, nullable: true }
+      responses:
+        '200':
+          description: Updated cart
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+
+  # ==================================================================
+  # CHECKOUT
+  # ==================================================================
+  /checkout/validate:
+    post:
+      tags: [Checkout]
+      operationId: validateCheckout
+      summary: Revalidate everything and return the authoritative bill
+      description: |
+        PRD CUS-CHECK-01/02. Revalidates vendor availability, **device health**,
+        item stock and pricing, then returns the bill the customer will be
+        charged, itemised. The client never computes the payable amount.
+        Call this immediately before creating the order.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cartId]
+              properties:
+                cartId: { type: string, format: uuid }
+                applyCreditId:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: Optional platform credit to apply (PRD REF-05).
+      responses:
+        '200':
+          description: Checkout is valid; bill is authoritative for 120 seconds.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckoutQuote' }
+        '409':
+          description: |
+            Blocking condition. `code` is one of `VENDOR_CLOSED`,
+            `VENDOR_DEVICE_OFFLINE`, `ITEM_UNAVAILABLE`, `PRICE_CHANGED`,
+            `BELOW_MINIMUM_ORDER`, `CART_EXPIRED`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /orders:
+    post:
+      tags: [Checkout]
+      operationId: createOrder
+      summary: Create an order and its payment intent
+      description: |
+        PRD PAY-01/02, API-01. Requires `Idempotency-Key`. Creates the order in
+        `CREATED`, snapshots the fee rule, settlement mode and tax model, then
+        creates the provider payment intent and moves the order to
+        `PAYMENT_PENDING`. Replaying the same key returns the original order and
+        payment intent with `200`.
+
+        This endpoint never confirms payment. Confirmation arrives only through
+        the verified provider webhook.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cartId, quoteId, customerPhone]
+              properties:
+                cartId: { type: string, format: uuid }
+                quoteId:
+                  {
+                    type: string,
+                    format: uuid,
+                    description: From /checkout/validate. Binds the price.,
+                  }
+                customerPhone:
+                  type: string
+                  pattern: '^\+[1-9][0-9]{7,14}$'
+                  description: |
+                    Captured, not verified. PRD §8.2 — payment success is the
+                    implicit verification event. No OTP in the pilot.
+                whatsappOptIn: { type: boolean, default: false }
+                applyCreditId: { type: string, format: uuid, nullable: true }
+      responses:
+        '201':
+          description: Order created, payment intent issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderCreated' }
+        '200':
+          description: Idempotent replay — the original order is returned unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderCreated' }
+        '400':
+          description: Missing `Idempotency-Key`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: Quote expired or checkout no longer valid. Re-run /checkout/validate.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  # ==================================================================
+  # PAYMENT
+  # ==================================================================
+  /payments/{paymentId}:
+    get:
+      tags: [Payment]
+      operationId: getPayment
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Payment state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+
+  # ==================================================================
+  # ORDER — CUSTOMER
+  # ==================================================================
+  /orders/{orderId}:
+    get:
+      tags: [Order (customer)]
+      operationId: getOrder
+      description: |
+        PRD CUS-TRK-04. Clients treat socket events as hints and re-fetch this
+        endpoint for authoritative state. Never derive state from event ordering.
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses:
+        '200':
+          description: Order state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /orders/{orderId}/cancel:
+    post:
+      tags: [Order (customer)]
+      operationId: customerCancelOrder
+      summary: Customer-initiated cancellation, available only when offered
+      description: |
+        PRD ESC-03. Enabled only once the escalation ladder has reached 180s and
+        the order is `DISPATCH_FAILED`. One tap, no support contact, refund
+        initiated in the same request. At any other time this returns `409`.
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200':
+          description: Cancelled and refund initiated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '409':
+          description: Cancellation is not currently offered for this order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  # ==================================================================
+  # KDS — VENDOR DEVICE
+  # ==================================================================
+  /kds/heartbeat:
+    post:
+      tags: [KDS]
+      operationId: kdsHeartbeat
+      security: [{ deviceToken: [] }]
+      summary: Device liveness beacon
+      description: |
+        PRD KDS-HB-01. Sent every 15 seconds. Silence for 60 seconds marks the
+        vendor unavailable for new orders and auto-recovers on resume.
+        **This endpoint is what earns the right to auto-fulfil** — without it the
+        accept click cannot be removed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, appVersion, unacknowledgedCount]
+              properties:
+                deviceId: { type: string, format: uuid }
+                appVersion: { type: string }
+                unacknowledgedCount: { type: integer, minimum: 0 }
+                printerOnline: { type: boolean, nullable: true }
+      responses:
+        '200':
+          description: Acknowledged, with any server-side directives
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverTime: { type: string, format: date-time }
+                  vendorOrderable: { type: boolean }
+                  dispatchBlocked:
+                    { type: boolean, description: True while an unacknowledged order is past 90s. }
+                  pendingOrderIds:
+                    type: array
+                    items: { type: string, format: uuid }
+
+  /kds/orders:
+    get:
+      tags: [KDS]
+      operationId: kdsListOrders
+      security: [{ deviceToken: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/OrderStatus' }
+      responses:
+        '200':
+          description: Live queue for this vendor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items: { $ref: '#/components/schemas/KdsOrder' }
+
+  /orders/{orderId}/acknowledge:
+    post:
+      tags: [KDS]
+      operationId: acknowledgeOrder
+      security: [{ deviceToken: [] }]
+      summary: Machine confirmation that the order was rendered or printed
+      description: |
+        PRD §9, KDS-PR-02. **This is not an accept action and no human triggers
+        it.** The KDS calls it automatically once the order card has painted;
+        the print worker calls it on a successful print. It cancels the
+        escalation ladder. A print failure must NOT call this endpoint.
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetType, deviceId]
+              properties:
+                targetType: { $ref: '#/components/schemas/DispatchTarget' }
+                deviceId: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Acknowledged; ladder cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /orders/{orderId}/preparing:
+    post:
+      tags: [KDS]
+      operationId: markPreparing
+      security: [{ deviceToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses:
+        '200':
+          description: Marked preparing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /orders/{orderId}/ready:
+    post:
+      tags: [KDS]
+      operationId: markReady
+      security: [{ deviceToken: [] }]
+      description: PRD KDS-READY-01. Fires the notification ladder immediately.
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses:
+        '200':
+          description: Marked ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /orders/{orderId}/complete:
+    post:
+      tags: [KDS]
+      operationId: markCompleted
+      security: [{ deviceToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrderId' }]
+      responses:
+        '200':
+          description: Marked completed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /orders/{orderId}/reject:
+    post:
+      tags: [KDS]
+      operationId: rejectOrder
+      security: [{ deviceToken: [] }]
+      summary: Exception path — reject and auto-refund
+      description: |
+        PRD KDS-REJ-01..05. Reason is mandatory. Atomically blocks all further
+        fulfilment transitions and creates the refund command with no human step
+        (REF-01, within 60 seconds). Available from `DISPATCHED` through
+        `PREPARING`; disabled once `READY`.
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { $ref: '#/components/schemas/RejectionReason' }
+                note: { type: string, maxLength: 300, nullable: true }
+                rejectedItemIds:
+                  type: array
+                  description: V1 only. Item-level rejection with partial refund (KDS-REJ-06).
+                  items: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Rejected; refund initiated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /kds/menu-items/{menuItemId}/availability:
+    patch:
+      tags: [KDS]
+      operationId: setItemAvailability
+      security: [{ deviceToken: [] }]
+      description: PRD KDS-STK-01. Customer-facing menu reflects this within 5 seconds.
+      parameters:
+        - name: menuItemId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isAvailable]
+              properties:
+                isAvailable: { type: boolean }
+                untilNextServiceDay: { type: boolean, default: true }
+      responses:
+        '200': { description: Updated }
+
+  /kds/vendor/ordering:
+    patch:
+      tags: [KDS]
+      operationId: setVendorOrdering
+      security: [{ deviceToken: [] }]
+      description: PRD KDS-STK-02. Blocks new orders immediately; in-flight orders unaffected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [acceptingOrders]
+              properties:
+                acceptingOrders: { type: boolean }
+                reopenAt: { type: string, format: date-time, nullable: true }
+      responses:
+        '200': { description: Updated }
+
+  # ==================================================================
+  # MANAGER
+  # ==================================================================
+  /manager/orders:
+    get:
+      tags: [Manager]
+      operationId: managerListOrders
+      description: PRD MGR-01. Consolidated live feed across all vendors in the court.
+      parameters:
+        - name: foodCourtId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/OrderStatus' }
+        - name: vendorId
+          in: query
+          schema: { type: string, format: uuid }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200':
+          description: Paged order feed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items: { $ref: '#/components/schemas/Order' }
+                  nextCursor: { type: string, nullable: true }
+
+  /manager/devices:
+    get:
+      tags: [Manager]
+      operationId: managerDeviceHealth
+      description: PRD KDS-HB-05. Offline devices visible before a customer complains.
+      parameters:
+        - name: foodCourtId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Device health board
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeviceHealth' }
+
+  /manager/orders/{orderId}/force-cancel:
+    post:
+      tags: [Manager]
+      operationId: forceCancelOrder
+      description: PRD MGR-03. Reason mandatory. Audited. Triggers the refund command.
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 300 }
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+
+  /manager/orders/{orderId}/force-refund:
+    post:
+      tags: [Manager]
+      operationId: forceRefundOrder
+      description: |
+        PRD MGR-04. Executed through the financial command path. There is no
+        endpoint anywhere in this API that mutates the ledger directly.
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 300 }
+                amountPaise:
+                  {
+                    type: integer,
+                    format: int64,
+                    minimum: 1,
+                    nullable: true,
+                    description: Omit for a full refund.,
+                  }
+      responses:
+        '200':
+          description: Refund initiated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Refund' }
+
+  # ==================================================================
+  # PUBLIC
+  # ==================================================================
+  /public/food-courts/{foodCourtId}/ready-board:
+    get:
+      tags: [Public]
+      operationId: getReadyBoard
+      security: []
+      summary: Order numbers currently ready for collection
+      description: |
+        PRD NOTIF-06, API-04. Tier 5 of the notification ladder and the
+        reliability floor of the whole product. Renders on any browser or TV
+        stick. **Exposes order numbers and nothing else** — no phone, no amount,
+        no item detail.
+      parameters:
+        - name: foodCourtId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Ready board
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servedAt: { type: string, format: date-time }
+                  ready:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        orderNumber: { type: string }
+                        vendorName: { type: string }
+                        readyAt: { type: string, format: date-time }
+
+  # ==================================================================
+  # ADMIN (representative subset — full CRUD follows the same shape)
+  # ==================================================================
+  /admin/vendors:
+    post:
+      tags: [Admin]
+      operationId: createVendor
+      description: |
+        PRD VEN-ONB-01/02. `settlementMode` is required before a vendor can be
+        activated, and a `PLATFORM_COLLECT` vendor cannot be activated without a
+        linked sub-merchant account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VendorInput' }
+      responses:
+        '201':
+          description: Vendor created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vendor' }
+
+  /admin/fee-rules:
+    post:
+      tags: [Admin]
+      operationId: createFeeRule
+      description: |
+        PRD FEE-02/05, PAY-MODE-05. Rules are versioned. A rule that is invalid
+        for the target vendor's settlement mode — for example a customer
+        platform fee on a `VENDOR_DIRECT` vendor — is rejected here at
+        configuration time, not later at checkout.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FeeRuleInput' }
+      responses:
+        '201':
+          description: Fee rule created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeeRule' }
+        '422':
+          description: Rule is not legal for this vendor's settlement mode.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /admin/food-courts/{foodCourtId}/tables:
+    post:
+      tags: [Admin]
+      operationId: createTable
+      description: PRD FC-ONB-02. Generates an opaque token and a print-ready QR asset.
+      parameters:
+        - name: foodCourtId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string, maxLength: 16 }
+      responses:
+        '201':
+          description: Table created with its QR token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourtTable' }
+
+  # ==================================================================
+  # WEBHOOKS (inbound)
+  # ==================================================================
+  /webhooks/payments/{provider}:
+    post:
+      tags: [Webhooks]
+      operationId: paymentWebhook
+      security: []
+      summary: Inbound payment provider callback
+      description: |
+        PRD PAY-03/04. **Signature is verified before the body is parsed.**
+        Idempotent on the provider event id via a unique constraint on
+        `processed_event`; a duplicate is acknowledged with `200` and dropped.
+
+        A verified success event marks the payment `SUCCESS` and transitions the
+        order to `PAYMENT_CONFIRMED` in one transaction, then enqueues dispatch
+        as a separate committed command — so a webhook delivered twice results
+        in exactly one dispatch.
+
+        An unrecognised or unparseable event is **never** mapped to `FAILED`. It
+        opens a `RECONCILIATION_REQUIRED` item.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [razorpay, cashfree, payu] }
+        - name: X-Provider-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Provider-specific envelope. Shape is validated per adapter.
+              additionalProperties: true
+      responses:
+        '200':
+          description: Accepted, or recognised as a duplicate and dropped.
+        '401':
+          description: Signature verification failed. Logged and alerted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /webhooks/pos/{provider}:
+    post:
+      tags: [Webhooks]
+      operationId: posWebhook
+      security: []
+      description: |
+        PRD POS-04/05. Signature-verified and idempotent. External status never
+        forces an invalid local transition — a POS reporting `ready` on a
+        rejected order is logged and reconciled, not applied.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [petpooja] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200': { description: Accepted }
+        '401':
+          description: Signature verification failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+# ======================================================================
+components:
+  securitySchemes:
+    sessionToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived customer session token issued by POST /sessions.
+    deviceToken:
+      type: http
+      scheme: bearer
+      description: KDS or printer device token. Scoped to one vendor.
+    staffToken:
+      type: http
+      scheme: bearer
+      description: Manager, ops, finance and admin. Role and tenant scope are claims.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated, unique per attempt. Backed by a unique database
+        constraint. Replay returns the original result. PRD API-01.
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    VendorId:
+      name: vendorId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CartId:
+      name: cartId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: |
+        Not found, or not visible to this tenant. Cross-tenant reads return 404
+        rather than 403 so existence is not leaked (PRD RBAC-01).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: Rate limit exceeded (PRD API-03).
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InvalidTransition:
+      description: |
+        The requested transition is not legal from the order's current state.
+        Never a silent no-op and never a forced write (PRD ORD-SM-01).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Problem:
+      type: object
+      required: [code, message, correlationId]
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable error code. Clients branch on this, never on
+            the message. See TDD §18 for the full catalogue.
+          examples:
+            [VENDOR_DEVICE_OFFLINE, INVALID_TRANSITION, QUOTE_EXPIRED, IDEMPOTENCY_KEY_REQUIRED]
+        message: { type: string, description: Human-readable, not for display to customers. }
+        detail: { type: string, nullable: true }
+        correlationId: { type: string }
+        fields:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+
+    Money:
+      type: integer
+      format: int64
+      minimum: 0
+      description: Amount in paise. 25000 = ₹250.00. Never a decimal.
+
+    OrderStatus:
+      type: string
+      enum:
+        [
+          CREATED,
+          PAYMENT_PENDING,
+          PAYMENT_CONFIRMED,
+          DISPATCHED,
+          ACKNOWLEDGED,
+          PREPARING,
+          READY,
+          COMPLETED,
+          PAYMENT_FAILED,
+          DISPATCH_FAILED,
+          REJECTED,
+          CANCELLED,
+          REFUND_PENDING,
+          REFUNDED,
+          REFUND_FAILED,
+          RECONCILIATION_REQUIRED,
+        ]
+
+    PaymentStatus:
+      type: string
+      enum:
+        [
+          INITIATED,
+          PENDING,
+          SUCCESS,
+          FAILED,
+          REFUND_PENDING,
+          REFUNDED,
+          REFUND_FAILED,
+          RECONCILIATION_REQUIRED,
+        ]
+
+    SettlementMode:
+      type: string
+      enum: [PLATFORM_COLLECT, VENDOR_DIRECT]
+      description: |
+        PRD §4. Never exposed in the customer PWA (PAY-MODE-07). Present here
+        only on staff and admin surfaces.
+
+    DispatchTarget:
+      type: string
+      enum: [KDS, PRINTER, POS]
+
+    RejectionReason:
+      type: string
+      enum:
+        [
+          ITEM_OUT_OF_STOCK,
+          KITCHEN_OVERLOADED,
+          EQUIPMENT_FAILURE,
+          VENDOR_CLOSING,
+          INGREDIENT_UNAVAILABLE,
+          PRICE_OR_MENU_ERROR,
+          CUSTOMER_REQUEST,
+          DUPLICATE_ORDER,
+          OTHER,
+        ]
+
+    UnavailableReason:
+      type: string
+      enum: [OUTSIDE_HOURS, TEMPORARILY_CLOSED, DEVICE_OFFLINE, DISPATCH_BLOCKED, SUSPENDED]
+
+    QrContext:
+      type: object
+      required: [foodCourtId, foodCourtName, tableId, tableLabel]
+      properties:
+        foodCourtId: { type: string, format: uuid }
+        foodCourtName: { type: string }
+        tableId: { type: string, format: uuid }
+        tableLabel: { type: string }
+        isOpen: { type: boolean }
+        closedMessage: { type: string, nullable: true }
+
+    SessionCreated:
+      type: object
+      properties:
+        sessionId: { type: string, format: uuid }
+        sessionToken: { type: string }
+        expiresAt: { type: string, format: date-time }
+        context: { $ref: '#/components/schemas/QrContext' }
+
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        foodCourtId: { type: string, format: uuid }
+        tableId: { type: string, format: uuid }
+        activeVendorId: { type: string, format: uuid, nullable: true }
+        cartId: { type: string, format: uuid, nullable: true }
+        activeOrderIds:
+          type: array
+          items: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+
+    VendorSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        cuisine:
+          type: array
+          items: { type: string }
+        imageUrl: { type: string, nullable: true }
+        orderable: { type: boolean }
+        unavailableReason:
+          oneOf:
+            - { $ref: '#/components/schemas/UnavailableReason' }
+            - { type: 'null' }
+        estimatedPrepMinutes: { type: integer }
+
+    Menu:
+      type: object
+      properties:
+        vendorId: { type: string, format: uuid }
+        stale: { type: boolean }
+        syncedAt: { type: string, format: date-time, nullable: true }
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              items:
+                type: array
+                items: { $ref: '#/components/schemas/MenuItem' }
+
+    MenuItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        basePricePaise: { $ref: '#/components/schemas/Money' }
+        taxRateBps: { type: integer, description: Basis points. 500 = 5%. }
+        imageUrl: { type: string, nullable: true }
+        dietaryFlags:
+          type: array
+          items: { type: string, enum: [VEG, NON_VEG, EGG, JAIN] }
+        isAvailable:
+          {
+            type: boolean,
+            description: 'False renders the item visible but disabled (CUS-MENU-04).',
+          }
+        variantGroups:
+          type: array
+          items: { $ref: '#/components/schemas/OptionGroup' }
+        addonGroups:
+          type: array
+          items: { $ref: '#/components/schemas/OptionGroup' }
+
+    OptionGroup:
+      type: object
+      description: PRD CUS-MENU-02. Selection rules are enforced server-side.
+      required: [id, name, minSelect, maxSelect, options]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        minSelect: { type: integer, minimum: 0 }
+        maxSelect: { type: integer, minimum: 1 }
+        options:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              priceDeltaPaise: { $ref: '#/components/schemas/Money' }
+              isAvailable: { type: boolean }
+
+    CartItemInput:
+      type: object
+      required: [menuItemId, quantity]
+      properties:
+        menuItemId: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1, maximum: 50 }
+        selectedOptionIds:
+          type: array
+          items: { type: string }
+        instructions: { type: string, maxLength: 200, nullable: true }
+
+    Cart:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        vendorId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              menuItemId: { type: string, format: uuid }
+              name: { type: string }
+              quantity: { type: integer }
+              unitPricePaise: { $ref: '#/components/schemas/Money' }
+              optionsPricePaise: { $ref: '#/components/schemas/Money' }
+              lineTotalPaise: { $ref: '#/components/schemas/Money' }
+              instructions: { type: string, nullable: true }
+        subtotalPaise: { $ref: '#/components/schemas/Money' }
+
+    CheckoutQuote:
+      type: object
+      description: |
+        The authoritative bill. Every line the customer will pay is named — no
+        undisclosed platform fee (PRD CUS-CHECK-02). Binding until `expiresAt`.
+      required: [quoteId, expiresAt, totalPayablePaise]
+      properties:
+        quoteId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        subtotalPaise: { $ref: '#/components/schemas/Money' }
+        foodTaxPaise: { $ref: '#/components/schemas/Money' }
+        customerFeePaise: { $ref: '#/components/schemas/Money' }
+        customerFeeTaxPaise: { $ref: '#/components/schemas/Money' }
+        creditAppliedPaise: { $ref: '#/components/schemas/Money' }
+        totalPayablePaise: { $ref: '#/components/schemas/Money' }
+        lines:
+          type: array
+          description: Display-ready breakdown, already labelled for the UI.
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              amountPaise: { type: integer, format: int64 }
+              kind: { type: string, enum: [SUBTOTAL, TAX, FEE, DISCOUNT, CREDIT, TOTAL] }
+
+    OrderCreated:
+      type: object
+      properties:
+        order: { $ref: '#/components/schemas/Order' }
+        payment:
+          type: object
+          properties:
+            paymentId: { type: string, format: uuid }
+            provider: { type: string }
+            providerOrderRef: { type: string }
+            amountPaise: { $ref: '#/components/schemas/Money' }
+            checkoutPayload:
+              type: object
+              description: Opaque provider payload the client hands to the checkout SDK.
+              additionalProperties: true
+
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        publicOrderNumber: { type: string }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        foodCourtId: { type: string, format: uuid }
+        vendorId: { type: string, format: uuid }
+        vendorName: { type: string }
+        tableLabel: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              quantity: { type: integer }
+              lineTotalPaise: { $ref: '#/components/schemas/Money' }
+              options:
+                type: array
+                items: { type: string }
+              instructions: { type: string, nullable: true }
+              isRejected: { type: boolean }
+        totalPayablePaise: { $ref: '#/components/schemas/Money' }
+        rejectionReason:
+          oneOf:
+            - { $ref: '#/components/schemas/RejectionReason' }
+            - { type: 'null' }
+        refund:
+          oneOf:
+            - { $ref: '#/components/schemas/Refund' }
+            - { type: 'null' }
+        creditIssued:
+          oneOf:
+            - { $ref: '#/components/schemas/PlatformCredit' }
+            - { type: 'null' }
+        cancellationOffered:
+          type: boolean
+          description: True once the escalation ladder reaches 180s (PRD ESC-03).
+        estimatedReadyAt: { type: string, format: date-time, nullable: true }
+        timeline:
+          type: array
+          items:
+            type: object
+            properties:
+              status: { $ref: '#/components/schemas/OrderStatus' }
+              at: { type: string, format: date-time }
+              actorType: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    KdsOrder:
+      type: object
+      description: |
+        PRD KDS-02. Everything the kitchen needs to cook and hand over without
+        looking at another screen. Deliberately excludes payment detail.
+      properties:
+        id: { type: string, format: uuid }
+        publicOrderNumber: { type: string }
+        tableLabel: { type: string }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        placedAt: { type: string, format: date-time }
+        ageSeconds: { type: integer }
+        slaSeconds: { type: integer }
+        totalPayablePaise: { $ref: '#/components/schemas/Money' }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              quantity: { type: integer }
+              options:
+                type: array
+                items: { type: string }
+              instructions: { type: string, nullable: true }
+
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        method: { type: string, nullable: true }
+        amountPaise: { $ref: '#/components/schemas/Money' }
+        createdAt: { type: string, format: date-time }
+        succeededAt: { type: string, format: date-time, nullable: true }
+
+    Refund:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        kind: { type: string, enum: [FULL, PARTIAL] }
+        amountPaise: { $ref: '#/components/schemas/Money' }
+        status: { type: string, enum: [REQUESTED, PENDING, SUCCEEDED, FAILED, ABANDONED] }
+        customerMessage:
+          type: string
+          description: |
+            Explicit customer-facing status. The words "payment lost" or an
+            unexplained failure never appear (PRD CUS-TRK-05).
+        expectedByAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    PlatformCredit:
+      type: object
+      description: |
+        PRD REF-05. Issued instantly at rejection so the customer is not left
+        waiting on a bank refund. Mutually exclusive with refund-to-source,
+        enforced atomically.
+      properties:
+        id: { type: string, format: uuid }
+        amountPaise: { $ref: '#/components/schemas/Money' }
+        status: { type: string, enum: [ISSUED, CONSUMED, EXPIRED, VOIDED] }
+        expiresAt: { type: string, format: date-time }
+
+    DeviceHealth:
+      type: object
+      properties:
+        deviceId: { type: string, format: uuid }
+        vendorId: { type: string, format: uuid, nullable: true }
+        vendorName: { type: string, nullable: true }
+        kind: { type: string, enum: [KDS_TABLET, THERMAL_PRINTER, DISPLAY_BOARD] }
+        online: { type: boolean }
+        lastHeartbeatAt: { type: string, format: date-time, nullable: true }
+        silenceSeconds: { type: integer, nullable: true }
+        unacknowledgedOrders: { type: integer }
+
+    CourtTable:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        qrToken: { type: string }
+        qrUrl: { type: string, description: The URL encoded into the printed QR. }
+        qrAssetUrl: { type: string, description: Print-ready SVG or PDF. }
+        status: { type: string }
+
+    VendorInput:
+      type: object
+      required: [foodCourtId, name, settlementMode]
+      properties:
+        foodCourtId: { type: string, format: uuid }
+        name: { type: string }
+        legalName: { type: string, nullable: true }
+        cuisine:
+          type: array
+          items: { type: string }
+        settlementMode: { $ref: '#/components/schemas/SettlementMode' }
+        estimatedPrepMinutes: { type: integer, minimum: 1, maximum: 180, default: 10 }
+
+    Vendor:
+      allOf:
+        - { $ref: '#/components/schemas/VendorInput' }
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string }
+            providerLinkedAccountId: { type: string, nullable: true }
+
+    FeeRuleInput:
+      type: object
+      required: [scope, party, feeType]
+      properties:
+        scope: { type: string, enum: [PLATFORM_DEFAULT, FOOD_COURT, VENDOR] }
+        foodCourtId: { type: string, format: uuid, nullable: true }
+        vendorId: { type: string, format: uuid, nullable: true }
+        party: { type: string, enum: [CUSTOMER, VENDOR, OPERATOR] }
+        feeType: { type: string, enum: [PERCENTAGE, FLAT_PER_ORDER, SUBSCRIPTION_MONTHLY] }
+        rateBps: { type: integer, minimum: 0, maximum: 10000, nullable: true }
+        amountPaise: { type: integer, format: int64, minimum: 0, nullable: true }
+        minFloorPaise: { type: integer, format: int64, minimum: 0, default: 0 }
+        maxCapPaise: { type: integer, format: int64, minimum: 0, nullable: true }
+        taxRateBps: { type: integer, minimum: 0, maximum: 10000, default: 1800 }
+        effectiveFrom: { type: string, format: date-time }
+
+    FeeRule:
+      allOf:
+        - { $ref: '#/components/schemas/FeeRuleInput' }
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            version: { type: integer }

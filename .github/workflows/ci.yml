@@ -1,0 +1,209 @@
+# .github/workflows/ci.yml
+# Food Court QR Ordering Platform — CI pipeline.
+# Companion to Infrastructure & Operations §4.
+#
+# Design rule: every gate that protects money runs on every push. Nothing that
+# protects money is allowed to be a nightly job, because nightly jobs get muted.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # ------------------------------------------------------------------
+  static:
+    name: Lint, types, contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - run: npm ci
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: ESLint (includes module-boundary rules, TDD §2.2)
+        run: npx eslint . --max-warnings=0
+
+      - name: OpenAPI spec is valid
+        run: npx @redocly/cli lint contracts/openapi.yaml
+
+      - name: No float in any financial path
+        run: |
+          # PRD PAY-05 / DATA-02. A float in a money column is not a style issue.
+          ! grep -rnE '(parseFloat|Number\.parseFloat)\s*\(' src/pricing src/payments src/ledger \
+            || (echo "::error::floating point found in a financial module" && exit 1)
+
+      - name: Requirement IDs referenced in code exist in the PRD
+        run: node scripts/check-req-ids.js
+
+  # ------------------------------------------------------------------
+  migrations:
+    name: Migrations apply cleanly
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: foodcourt_ci
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ['5432:5432']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - run: npm ci
+
+      - name: Apply from empty
+        env: { DATABASE_URL: 'postgres://postgres:ci@localhost:5432/foodcourt_ci' }
+        run: npm run migrate:up
+
+      - name: Constraints actually exist
+        env: { DATABASE_URL: 'postgres://postgres:ci@localhost:5432/foodcourt_ci' }
+        run: npm run test:constraints
+        # Asserts each violation in PRD §18.3 fails at the DATABASE, not in app code:
+        #   duplicate order.idempotency_key, duplicate processed_event,
+        #   cross-vendor cart_item, UPDATE on ledger_entry.
+
+  # ------------------------------------------------------------------
+  test:
+    name: Unit, property and integration
+    runs-on: ubuntu-latest
+    needs: [static]
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: ci, POSTGRES_DB: foodcourt_ci }
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ['5432:5432']
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ['6379:6379']
+    env:
+      DATABASE_URL: 'postgres://postgres:ci@localhost:5432/foodcourt_ci'
+      REDIS_URL: 'redis://localhost:6379'
+      TAX_SECTION_9_5_APPLIES: 'true' # TDD §14: no default. CI runs the harder path.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - run: npm ci
+      - run: npm run migrate:up
+
+      - name: Unit
+        run: npm run test:unit -- --coverage
+
+      - name: Property tests (ledger balances, rounding residuals)
+        run: npm run test:property
+        # TDD §4.3. Must include: every order's ledger entries sum to zero for
+        # any randomly generated legal fee configuration.
+
+      - name: Integration (webhooks, idempotency, adapters)
+        run: npm run test:integration
+
+      - name: Failure injection — the gate on auto-fulfil
+        run: npm run test:chaos
+        # TDD §17.1. Includes: KDS killed after payment, printer out of paper,
+        # both targets dead, ack at 179s, restart mid-ladder, duplicate webhook,
+        # credit consumed while refund in flight.
+
+      - name: Coverage floor on financial modules
+        run: npm run test:coverage:financial
+        # vitest run --coverage --config vitest.financial.config.ts
+        # thresholds: lines 95, branches 90 over src/pricing, src/payments, src/ledger.
+        # See docs/tech/tooling.md.
+
+  # ------------------------------------------------------------------
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - run: npm ci
+      - run: npm audit --audit-level=high
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+
+      - name: No secrets reachable from the client bundle (PRD SEC-03)
+        run: npm run build:web && node scripts/scan-bundle-for-secrets.js
+
+  # ------------------------------------------------------------------
+  a11y:
+    name: Accessibility
+    runs-on: ubuntu-latest
+    needs: [static]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - run: npm ci
+      - run: npm run build:web
+      - name: axe-core on every customer PWA route
+        run: npm run test:a11y
+        # PRD §34. Fails on any serious or critical violation.
+
+  # ------------------------------------------------------------------
+  image:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    needs: [test, migrations, security, a11y]
+    if: github.ref == 'refs/heads/main'
+    permissions: { contents: read, packages: write, id-token: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+  # ------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    needs: [image]
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Migrate then deploy
+        run: ./scripts/deploy.sh staging ${{ github.sha }}
+        # Migrations run BEFORE the new image serves traffic, and every migration
+        # must be backward compatible with the previous release — see Ops §6.2.
+      - name: Smoke test
+        run: npm run test:smoke -- --base-url https://staging-api.tapvera.example
+
+  # Production deploy is manual, gated on an environment approval, and never
+  # runs during a service window. See Ops §6.
