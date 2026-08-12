@@ -83,6 +83,33 @@ export class HealthController {
     this.service = new HealthService(pool);
   }
 
+  /**
+   * A signpost, not a feature. Opening the root of your own dev server and
+   * getting a bare `Cannot GET /` tells you nothing about whether the service
+   * is healthy or which routes exist.
+   *
+   * Suppressed outside development: in production this is an unauthenticated
+   * endpoint enumerating the surface area, and `/metrics` in particular should
+   * not be advertised to anyone who happens to reach the origin.
+   */
+  @Get()
+  index(@Res() res: Response): void {
+    if (config().NODE_ENV === 'production') {
+      res.status(404).json({ statusCode: 404, error: 'Not Found' });
+      return;
+    }
+    res.json({
+      service: 'foodcourt-platform',
+      status: 'running',
+      note: 'No ordering endpoints yet — domain logic exists as libraries, nothing is wired to HTTP.',
+      routes: {
+        '/healthz': 'liveness — is the event loop responsive',
+        '/readyz': 'readiness — config valid and Postgres reachable',
+        '/metrics': 'Prometheus exposition',
+      },
+    });
+  }
+
   @Get('healthz')
   liveness(): { status: 'ok' } {
     return { status: 'ok' };

@@ -71,20 +71,44 @@ describeDb('schema.ts conforms to the live database', () => {
   let pool: pg.Pool | undefined;
   let actual = new Map<string, Map<string, Column>>();
   let declared = new Map<string, Map<string, string>>();
+  let views: string[] = [];
+  let enumTypes = new Set<string>();
 
   beforeAll(async () => {
     pool = new pg.Pool({ connectionString: url });
+
+    // BASE TABLE only. `information_schema.columns` also describes views, and
+    // the first run of this test duly demanded that schema.ts declare
+    // v_ledger_imbalance as a table.
     const { rows } = await pool.query<Column>(`
-      SELECT table_name, column_name, data_type, udt_name, is_nullable, column_default
-      FROM information_schema.columns
-      WHERE table_schema = current_schema()
-      ORDER BY table_name, ordinal_position
+      SELECT c.table_name, c.column_name, c.data_type, c.udt_name,
+             c.is_nullable, c.column_default
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      WHERE c.table_schema = current_schema()
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY c.table_name, c.ordinal_position
     `);
     actual = new Map();
     for (const r of rows) {
       if (!actual.has(r.table_name)) actual.set(r.table_name, new Map());
       actual.get(r.table_name)!.set(r.column_name, r);
     }
+
+    const v = await pool.query<{ table_name: string }>(`
+      SELECT table_name FROM information_schema.views
+      WHERE table_schema = current_schema() ORDER BY table_name
+    `);
+    views = v.rows.map((r) => r.table_name);
+
+    // Real enums only. `data_type = 'USER-DEFINED'` is true of any non-builtin
+    // type, so it also caught `citext` — which is an extension domain, not an
+    // enum, and correctly typed as string. `pg_type.typtype = 'e'` is the
+    // question actually being asked.
+    const e = await pool.query<{ typname: string }>(`SELECT typname FROM pg_type WHERE typtype = 'e'`);
+    enumTypes = new Set(e.rows.map((r) => r.typname));
+
     declared = declaredTables();
   });
 
@@ -170,7 +194,7 @@ describeDb('schema.ts conforms to the live database', () => {
       if (!real) continue;
       for (const [name, ts] of cols) {
         const col = real.get(name);
-        if (col?.data_type !== 'USER-DEFINED') continue;
+        if (!col || !enumTypes.has(col.udt_name.replace(/^_/, ''))) continue;
         // A Postgres enum widened to `string` in TypeScript throws away the
         // whole benefit: every invalid status becomes a runtime 22P02 instead
         // of a compile error.
@@ -180,6 +204,37 @@ describeDb('schema.ts conforms to the live database', () => {
       }
     }
     expect(problems).toEqual([]);
+  });
+
+  it('never types a primary key as nullable', () => {
+    // The trap that produced 23 failures on this test's first run. The DDL
+    // writes `id UUID PRIMARY KEY DEFAULT gen_random_uuid()` and never the
+    // words NOT NULL, so a naive read of the column spec concludes the column
+    // is nullable. PRIMARY KEY implies NOT NULL in Postgres. Typing it
+    // `Generated<string | null>` forces a null check on every primary key at
+    // every call site, for a value that cannot be null.
+    const problems: string[] = [];
+    for (const [table, cols] of declared) {
+      for (const [name, ts] of cols) {
+        if (name !== 'id' && !(table === 'escalation_state' && name === 'order_id')) continue;
+        if (/\bnull\b/.test(ts)) problems.push(`${table}.${name} is a primary key typed ${ts}`);
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('has the invariant views the ops runbook depends on', () => {
+    // These are excluded from the table checks above because they are views,
+    // but their absence would break the nightly assertions in Infra & Ops §5.2
+    // and the two emptiness checks in scripts/test-constraints.ts.
+    for (const v of [
+      'v_ledger_imbalance',
+      'v_credit_refund_conflict',
+      'v_unacknowledged_orders',
+      'v_stale_vendor_devices',
+    ]) {
+      expect(views, `${v} is missing from the database`).toContain(v);
+    }
   });
 
   it('types every monetary column as a number', () => {

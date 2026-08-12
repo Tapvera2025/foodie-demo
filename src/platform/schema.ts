@@ -165,7 +165,7 @@ export type MenuSourceType = 'PLATFORM' | 'POS_PETPOOJA' | 'POS_OTHER';
 export type IntegrationHealth = 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY' | 'UNKNOWN';
 
 export interface FoodCourtTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   name: string;
   city: string;
   address: string | null;
@@ -178,7 +178,7 @@ export interface FoodCourtTable {
 }
 
 export interface CourtTableTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   food_court_id: string;
   label: string;
   qr_token: string;
@@ -189,7 +189,7 @@ export interface CourtTableTable {
 }
 
 export interface VendorTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   food_court_id: string;
   name: string;
   legal_name: string | null;
@@ -212,7 +212,7 @@ export interface VendorTable {
 }
 
 export interface PlatformUserTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   /** CITEXT — compares case-insensitively in the database, so no `.toLowerCase()` at call sites. */
   email: string | null;
   phone: string | null;
@@ -224,7 +224,7 @@ export interface PlatformUserTable {
 }
 
 export interface UserRoleAssignmentTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   user_id: string;
   role: ActorType;
   food_court_id: string | null;
@@ -234,7 +234,7 @@ export interface UserRoleAssignmentTable {
 }
 
 export interface DeviceTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   vendor_id: string | null;
   food_court_id: string;
   kind: DeviceKind;
@@ -247,7 +247,7 @@ export interface DeviceTable {
 }
 
 export interface CustomerTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   phone: string | null;
   phone_verified_at: Date | null;
   whatsapp_opt_in_at: Date | null;
@@ -256,7 +256,7 @@ export interface CustomerTable {
 }
 
 export interface AppSessionTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   customer_id: string | null;
   food_court_id: string;
   court_table_id: string;
@@ -268,7 +268,7 @@ export interface AppSessionTable {
 }
 
 export interface MenuTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   vendor_id: string;
   source_type: Generated<MenuSourceType>;
   source_version: string | null;
@@ -279,7 +279,7 @@ export interface MenuTable {
 }
 
 export interface MenuCategoryTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   menu_id: string;
   name: string;
   sort_order: Generated<number>;
@@ -287,7 +287,7 @@ export interface MenuCategoryTable {
 }
 
 export interface MenuItemTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   menu_id: string;
   menu_category_id: string;
   external_item_id: string | null;
@@ -307,7 +307,7 @@ export interface MenuItemTable {
 }
 
 export interface CartTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   app_session_id: string;
   vendor_id: string;
   pricing_snapshot: Json | null;
@@ -317,7 +317,7 @@ export interface CartTable {
 }
 
 export interface CartItemTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   cart_id: string;
   menu_item_id: string;
   vendor_id: string;
@@ -328,7 +328,7 @@ export interface CartItemTable {
 }
 
 export interface FeeRuleTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   scope: FeeScope;
   food_court_id: string | null;
   vendor_id: string | null;
@@ -348,7 +348,7 @@ export interface FeeRuleTable {
 }
 
 export interface OrderTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   public_order_number: string;
   app_session_id: string | null;
   customer_id: string | null;
@@ -387,7 +387,7 @@ export interface OrderTable {
 }
 
 export interface OrderItemTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   order_id: string;
   menu_item_id: string | null;
   external_item_id: string | null;
@@ -431,7 +431,7 @@ export interface DispatchAttemptTable {
 }
 
 export interface EscalationStateTable {
-  order_id: string | null;
+  order_id: string;
   step: Generated<number>;
   next_run_at: Date | null;
   cancelled_at: Date | null;
@@ -441,7 +441,7 @@ export interface EscalationStateTable {
 }
 
 export interface PaymentTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   order_id: string;
   settlement_mode: SettlementMode;
   provider: string;
@@ -461,7 +461,7 @@ export interface PaymentTable {
 }
 
 export interface RefundTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   order_id: string;
   payment_id: string;
   kind: Generated<RefundKind>;
@@ -479,7 +479,7 @@ export interface RefundTable {
 }
 
 export interface PlatformCreditTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   customer_id: string;
   food_court_id: string;
   origin_order_id: string;
@@ -521,7 +521,7 @@ export interface LedgerEntryTable {
 }
 
 export interface SettlementTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   vendor_id: string;
   period_start: Date;
   period_end: Date;
@@ -537,7 +537,7 @@ export interface SettlementTable {
 }
 
 export interface ReconciliationItemTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   kind: ReconciliationKind;
   state: Generated<ReconciliationState>;
   order_id: string | null;
@@ -570,7 +570,7 @@ export interface NotificationTable {
 }
 
 export interface PosIntegrationTable {
-  id: Generated<string | null>;
+  id: Generated<string>;
   vendor_id: string;
   provider: string;
   credentials_ref: string;
