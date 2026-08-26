@@ -19,20 +19,36 @@ import type { Role } from './permissions.js';
 export const ALG = 'EdDSA';
 const ISSUER = 'tapvera-platform';
 
-export type TokenType = 'session' | 'device' | 'staff';
+export type TokenType = 'session' | 'device' | 'staff' | 'customer';
 
 export const TOKEN_TTL_SECONDS: Readonly<Record<TokenType, number>> = {
   session: 4 * 60 * 60,
   device: 30 * 24 * 60 * 60,
   staff: 30 * 60,
+  /**
+   * Thirty days. Long, on purpose.
+   *
+   * The customer verified a phone number to buy one plate of noodles. Making
+   * them do it again next Tuesday is the friction DR-0001 spent a whole
+   * decision minimising, and it would be self-inflicted. The token grants
+   * ordering and order history for one identity — it is not a staff session
+   * with money-moving powers, and pricing it like one gets the trade backwards.
+   */
+  customer: 30 * 24 * 60 * 60,
 };
 
 /** Interface Specs §2.1 — deliberately anonymous. No PII in claims. */
 export interface SessionClaims {
   readonly typ: 'session';
+  /** `app_session.id`. The token is what proves the client owns this row. */
   readonly sub: string;
   readonly fc: string;
-  readonly tbl: string;
+  /**
+   * Nullable since §2.1 moved the QR from the table to the venue. Kept rather
+   * than removed because `court_table` survives in the schema for venues that
+   * do have numbered seating.
+   */
+  readonly tbl: string | null;
   readonly cus: string | null;
 }
 
@@ -58,7 +74,22 @@ export interface StaffClaims {
   readonly ver: number;
 }
 
-export type Claims = SessionClaims | DeviceClaims | StaffClaims;
+/**
+ * An identified customer. DR-0001.
+ *
+ * Carries no phone number. The claim set travels in a token the customer's own
+ * device stores and that every request echoes into our logs; putting a mobile
+ * number in it would spread PII across every log line the customer touches, to
+ * save one indexed lookup.
+ */
+export interface CustomerClaims {
+  readonly typ: 'customer';
+  /** `customer.id`, not the phone. */
+  readonly sub: string;
+  readonly ver: number;
+}
+
+export type Claims = SessionClaims | DeviceClaims | StaffClaims | CustomerClaims;
 
 /**
  * Derived from jose's own signatures rather than a named export, because jose

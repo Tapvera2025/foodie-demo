@@ -91,19 +91,93 @@ export function customerFacingReason(reason: UnavailableReason | null): string |
   }
 }
 
+/**
+ * PRD §6 — three concepts, kept apart.
+ *
+ * `status` answers "does this exist on the menu", `availability` answers "can I
+ * order it right now", and `remaining` answers "how many are left". They fail
+ * for different reasons and a customer should be told the right one: an item
+ * that has been discontinued should not appear at all, an item that sold out
+ * should appear greyed with a reason, and an item with stock left should be
+ * orderable. Collapsing them meant a vendor who ran out at 1pm had to delete
+ * the item and remember to recreate it in the morning. Nobody remembers.
+ */
 export interface ItemAvailabilityInput {
-  readonly isAvailable: boolean;
-  readonly unavailableUntil?: Date | null;
+  readonly status: 'ACTIVE' | 'INACTIVE';
+  readonly availability: 'AVAILABLE' | 'SOLD_OUT' | 'TEMPORARILY_UNAVAILABLE';
+  /** When availability reverts by itself. Null while available. */
+  readonly availableFrom?: Date | null;
+  readonly inventoryMode?: 'TRACKED' | 'UNTRACKED';
+  /** Only consulted when inventoryMode is TRACKED. Computed, never stored. */
+  readonly remaining?: number | null;
+}
+
+export type ItemUnavailableReason =
+  | 'DISCONTINUED'
+  | 'SOLD_OUT'
+  | 'TEMPORARILY_UNAVAILABLE'
+  | 'OUT_OF_STOCK';
+
+export interface ItemState {
+  readonly orderable: boolean;
+  readonly reason: ItemUnavailableReason | null;
+  /** False means do not render it at all, rather than render it greyed. */
+  readonly listed: boolean;
 }
 
 /**
- * PRD KDS-STK-03: an out-of-stock flag auto-clears at the start of the next
- * service day. Vendors forget to re-enable items; the system should not punish
- * customers for that.
+ * PRD KDS-STK-03: a sold-out flag auto-clears at the start of the next service
+ * day. Vendors forget to re-enable items, and the system should not punish
+ * customers for that — but the clearing is derived at read time rather than
+ * written by a job, so an item comes back on its own even if no job ran.
  */
-export function itemAvailable(item: ItemAvailabilityInput, now: Date): boolean {
-  if (item.unavailableUntil != null) {
-    return item.unavailableUntil.getTime() <= now.getTime();
+export function itemState(item: ItemAvailabilityInput, now: Date): ItemState {
+  // Discontinued is not a kind of unavailable. It is not on the menu.
+  if (item.status !== 'ACTIVE') {
+    return { orderable: false, reason: 'DISCONTINUED', listed: false };
   }
-  return item.isAvailable;
+
+  // A block that has lapsed is not a block. Checked before the availability
+  // value so a stale flag nobody cleared cannot outlive its own deadline.
+  const blockLapsed = item.availableFrom != null && item.availableFrom.getTime() <= now.getTime();
+
+  if (!blockLapsed && item.availability === 'SOLD_OUT') {
+    return { orderable: false, reason: 'SOLD_OUT', listed: true };
+  }
+  if (!blockLapsed && item.availability === 'TEMPORARILY_UNAVAILABLE') {
+    return { orderable: false, reason: 'TEMPORARILY_UNAVAILABLE', listed: true };
+  }
+
+  // Inventory is the last gate, and only where a count is actually kept.
+  // An UNTRACKED item with `remaining` set is a bug in the caller, not a
+  // reason to refuse the sale — so the mode decides, not the presence of data.
+  if (item.inventoryMode === 'TRACKED' && (item.remaining ?? 0) <= 0) {
+    return { orderable: false, reason: 'OUT_OF_STOCK', listed: true };
+  }
+
+  return { orderable: true, reason: null, listed: true };
+}
+
+/** Convenience for the many call sites that only need the boolean. */
+export function itemAvailable(item: ItemAvailabilityInput, now: Date): boolean {
+  return itemState(item, now).orderable;
+}
+
+/**
+ * What the customer is told. SOLD_OUT and OUT_OF_STOCK are the same sentence
+ * to them — one is a switch a cook flipped and the other is a count reaching
+ * zero, and that distinction is the vendor's business, not the diner's.
+ */
+export function itemReasonCopyKey(reason: ItemUnavailableReason | null): string | null {
+  switch (reason) {
+    case null:
+      return null;
+    case 'DISCONTINUED':
+      return null; // Not shown at all.
+    case 'SOLD_OUT':
+    case 'OUT_OF_STOCK':
+      return 'item.soldout.badge';
+    case 'TEMPORARILY_UNAVAILABLE':
+      return 'item.unavailable.badge';
+  }
 }

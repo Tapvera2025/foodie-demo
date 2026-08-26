@@ -49,6 +49,16 @@ export interface PoolOptions {
   statementTimeoutMs?: number;
   lockTimeoutMs?: number;
   idleInTransactionTimeoutMs?: number;
+  /**
+   * How long to wait for a CONNECTION, as opposed to a query.
+   *
+   * Absent on the API, where the pool should keep trying rather than fail a
+   * customer's checkout on a momentary blip. Present here because a diagnostic
+   * run against a database that is not up should say so in seconds rather than
+   * hang — and that difference is a reason to expose the option, not a reason
+   * for scripts to build their own pool and lose the INT8 parser with it.
+   */
+  connectionTimeoutMillis?: number;
 }
 
 export function createPool(opts: PoolOptions): pg.Pool {
@@ -61,6 +71,9 @@ export function createPool(opts: PoolOptions): pg.Pool {
     lock_timeout: opts.lockTimeoutMs ?? 3_000,
     // Catches a forgotten await holding a row lock.
     idle_in_transaction_session_timeout: opts.idleInTransactionTimeoutMs ?? 15_000,
+    ...(opts.connectionTimeoutMillis === undefined
+      ? {}
+      : { connectionTimeoutMillis: opts.connectionTimeoutMillis }),
   });
 }
 

@@ -18,7 +18,7 @@ data bug.
 | Framework        | NestJS                                 | 11      | Modules and DI map 1:1 onto TDD §2.1. Boundaries become structural, not conventional.  |
 | HTTP adapter     | Express                                | 5       | Best-supported Nest adapter. At 8 orders/min, Fastify's throughput edge is irrelevant. |
 | Validation       | Zod                                    | 3       | Shared shapes with the frontend. Parses at the boundary, never inside domain code.     |
-| Realtime         | Socket.IO + `@socket.io/redis-adapter` | 4       | Multi-instance broadcast. **Broadcast only** — never a source of state.                |
+| Realtime         | Socket.IO + Postgres `LISTEN/NOTIFY`   | 4       | Multi-instance broadcast. **Broadcast only** — never a source of state. See §Realtime.  |
 | Queue            | BullMQ                                 | 5       | Retries, backoff with jitter, delayed jobs, DLQ. Powers the escalation ladder.         |
 | Logging          | Pino + `nestjs-pino`                   | 9       | Structured JSON. Correlation id from `AsyncLocalStorage`.                              |
 | Metrics          | `prom-client`                          | 15      | `/metrics`, private network only.                                                      |
@@ -34,6 +34,45 @@ data bug.
 | Thermal print    | `node-thermal-printer`                 | 4       | ESC/POS over TCP 9100.                                                                 |
 
 ---
+
+
+### Realtime: why LISTEN/NOTIFY rather than the Redis adapter
+
+This row said `@socket.io/redis-adapter` until the layer was actually built.
+The transport changed on implementation, deliberately, and the reasons are
+worth keeping because the trade-off is not obvious.
+
+The bus has to be **out of process**: the worker owns dispatch, escalation,
+refunds, capture and reconciliation, so most of what happens to an order after
+checkout happens somewhere the API's sockets are not. An in-process emitter
+delivers nothing for exactly the transitions a customer is waiting on.
+
+Postgres `LISTEN/NOTIFY` was chosen over Redis for three reasons:
+
+1. **It is transactional.** `pg_notify` fires on COMMIT and a rolled-back
+   transaction emits nothing. `transitionOrder` publishes on its own `trx`, so
+   a client can never be told about a transition the database refused. Every
+   other transport makes that mistake available.
+2. **No adapter is needed for fanout.** Every API instance `LISTEN`s, receives
+   every notification, and broadcasts to its own local room members — which is
+   what the Redis adapter exists to arrange, achieved by the subscription
+   topology instead. At §16.1's ~8 orders/min per court the cost is not
+   measurable.
+3. **No new dependency and nothing new that can be down.** `pg` is already
+   here; Redis would add three packages and make realtime fail whenever Redis
+   does.
+
+**What is given up:** notifications are not durable, so an API instance that is
+down misses whatever was published while it was down. That is survivable only
+because an event carries **identifiers and no state** — it says "refetch", never
+"here is the new value" — so a missed event costs latency and the reconnect
+refetch heals it. **If events ever start carrying state, this trade-off is void
+and the transport must be revisited.**
+
+Rooms are assigned from the verified token at handshake and never named by the
+client; there is no inbound message handler at all. `tests/conformance/
+realtime-rooms.mjs` proves the isolation against a real server and real clients
+rather than asserting it from source.
 
 ## Why NestJS
 

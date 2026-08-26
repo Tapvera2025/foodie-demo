@@ -1,0 +1,485 @@
+@import 'tailwindcss';
+
+/**
+ * The platform console. See DESIGN.md for the shared system.
+ *
+ * A THIRD SET OF CONSTRAINTS, NOT A COPY OF EITHER OTHER APP
+ *
+ * The customer PWA is a phone in daylight. The kitchen board is a mounted
+ * tablet over a hot range. This is neither: a laptop, indoors, used for twenty
+ * minutes at a time by somebody typing a PAN off a photograph of a licence.
+ *
+ * What follows from that:
+ *
+ *   LIGHT BY DEFAULT   an office, not a kitchen. Dark is one click away.
+ *   DENSER             14px base, not 15–16px. This screen is a table of
+ *                      stalls and a form of eleven fields; the phone app's
+ *                      generous spacing would put four rows on a laptop.
+ *   MONOSPACE FOR IDS  a PAN, a GSTIN, an FSSAI number and a UUID are all
+ *                      transcribed by eye. Proportional type makes 0/O and
+ *                      1/l/I ambiguous at exactly the moment it matters.
+ *
+ * `@theme inline` for the same reason as the other two apps: `bg-surface`
+ * compiles straight to `var(--surface)`, so the theme swap resolves in the
+ * element's own cascade with no layer question to reason about.
+ */
+@theme inline {
+  --color-brand-500: var(--brand-500);
+  --color-brand-600: var(--brand-600);
+  --color-brand-700: var(--brand-700);
+  --color-brand-50: var(--brand-50);
+  --color-brand-fill: var(--brand-fill);
+  --color-on-brand: var(--on-brand);
+
+  --color-ink-900: var(--ink-900);
+  --color-ink-800: var(--ink-800);
+  --color-ink-700: var(--ink-700);
+  --color-ink-500: var(--ink-500);
+  --color-ink-400: var(--ink-400);
+  --color-ink-200: var(--ink-200);
+  --color-ink-100: var(--ink-100);
+  --color-ink-50: var(--ink-50);
+
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+
+  /*
+   * STATUS COLOURS ARE THE VOCABULARY OF THIS ENTIRE APP.
+   *
+   * Every court and every stall is in one of four states, and the console's
+   * whole job is to make the current one obvious and the next one reachable.
+   * They map to the lifecycle, not to a feeling:
+   *
+   *   draft      onboarding, cannot take money yet
+   *   live       ACTIVE — taking orders
+   *   held       SUSPENDED — reversible, a problem being worked
+   *   closed     INACTIVE — terminal, the stall has left
+   */
+  --color-draft-50: var(--draft-50);
+  --color-draft-500: var(--draft-500);
+  --color-draft-700: var(--draft-700);
+
+  --color-live-50: var(--live-50);
+  --color-live-500: var(--live-500);
+  --color-live-700: var(--live-700);
+
+  --color-held-50: var(--held-50);
+  --color-held-500: var(--held-500);
+  --color-held-700: var(--held-700);
+
+  --color-closed-50: var(--closed-50);
+  --color-closed-500: var(--closed-500);
+  --color-closed-700: var(--closed-700);
+
+  /*
+   * The dialog scrim.
+   *
+   * A token, not `bg-black/50`, for the same reason every other colour here is
+   * one: the right wash is theme-dependent. Over a pale console a near-black at
+   * half opacity reads as "dimmed"; over the dark theme the same value reads as
+   * "the screen went out", because there was very little light to take away.
+   */
+  --color-scrim: var(--scrim);
+
+  /*
+   * GLASS — hover and press, in a colour that means nothing.
+   *
+   * Replaces the held-50 washes on hover. Pointing at a control is not a
+   * semantic event and should not spend a semantic colour; red means
+   * something specific here and a cursor passing over a button does not.
+   */
+  --color-glass-fill: var(--glass-fill);
+  --color-glass-press: var(--glass-press);
+  --color-glass-edge: var(--glass-edge);
+
+  --radius-card: 0.75rem;
+
+  --shadow-card: var(--elev-card);
+  --shadow-dialog: var(--elev-dialog);
+}
+
+/* ============================================================================
+   LIGHT — the default. An office, not a kitchen.
+   ========================================================================= */
+:root,
+[data-theme='light'] {
+  --brand-50: #fff1f0;
+  --brand-500: #e8483f;
+  --brand-600: #cf3a32;
+  --brand-700: #a92d26;
+  --brand-fill: #cf3a32; /* white on this = 4.91:1 */
+  --on-brand: #ffffff;
+
+  --ink-900: #12151a;
+  --ink-800: #232a33;
+  --ink-700: #3c4553;
+  --ink-500: #656e7d;
+  --ink-400: #8b94a3;
+  --ink-200: #e2e5ea;
+  --ink-100: #eef0f4;
+  --ink-50: #f7f8fa;
+
+  --page: #f4f5f7;
+  --surface: #ffffff;
+
+  /* Amber. Onboarding is unfinished work, not a problem — the same tone the
+     customer app uses for "payment not completed". */
+  --draft-50: #fff8e8;
+  --draft-500: #a9700a;
+  --draft-700: #7a5602;
+
+  --live-50: #ecf8f1;
+  --live-500: #12874a;
+  --live-700: #0d6437;
+
+  --held-50: #fef2f2;
+  --held-500: #c92418;
+  --held-700: #9c1a11;
+
+  /* Grey, not red. A closed stall is a fact, not an alarm — colouring it like
+     a failure makes a tidy court look like a broken one. */
+  --closed-50: #eef0f4;
+  --closed-500: #656e7d;
+  --closed-700: #3c4553;
+
+  --elev-card: 0 1px 2px rgb(18 21 26 / 0.04), 0 2px 8px rgb(18 21 26 / 0.04);
+  /* Deeper than a card's, because a dialog is not on the page — it is over it,
+     and the shadow is what says so on a surface that is white on white. */
+  --elev-dialog: 0 12px 32px rgb(18 21 26 / 0.16), 0 2px 8px rgb(18 21 26 / 0.08);
+
+  --scrim: #12151a66; /* 40% */
+
+  /*
+   * Glass, LIGHT: a DARK wash. The page here is pale, so a white translucent
+   * film over a white card is literally nothing — the classic glassmorphism
+   * mistake, copied from dark-mode screenshots where it works. What reads as
+   * glass on a light surface is a faint shadow of the thing behind it.
+   */
+  --glass-fill: #12151a0f; /* 6% */
+  --glass-press: #12151a1f; /* 12% */
+  --glass-edge: #12151a29; /* 16% */
+
+  color-scheme: light;
+}
+
+/* ============================================================================
+   DARK — one click away, for whoever works at night
+   ========================================================================= */
+[data-theme='dark'] {
+  --brand-50: #2a1210;
+  --brand-500: #ff5a50;
+  --brand-600: #ff7b73;
+  --brand-700: #ff9d96;
+  /* The fill stays bright and the LABEL goes dark. A saturated red is a bright
+     colour; white on it is 3.07:1 in this theme. See DESIGN.md. */
+  --brand-fill: #ff5a50;
+  --on-brand: #12151a;
+
+  --ink-900: #f2f5f8;
+  --ink-800: #dbe2ea;
+  --ink-700: #c2cbd6;
+  --ink-500: #8b97a6;
+  --ink-400: #6e7a88;
+  --ink-200: #2a323c;
+  --ink-100: #232a33;
+  --ink-50: #1b212a;
+
+  --page: #0e1116;
+  --surface: #171c23;
+
+  --draft-50: #2a2110;
+  --draft-500: #f5b82e;
+  --draft-700: #ffd77a;
+
+  --live-50: #10261a;
+  --live-500: #2ecc71;
+  --live-700: #6ee7a5;
+
+  --held-50: #2c1512;
+  --held-500: #ff5a4e;
+  --held-700: #ff9d96;
+
+  --closed-50: #232a33;
+  --closed-500: #8b97a6;
+  --closed-700: #c2cbd6;
+
+  --elev-card: none;
+  /* Shadows barely read on a dark page; the dialog's hairline does the work.
+     Kept as a token rather than dropped so the class stays valid in both. */
+  --elev-dialog: none;
+
+  --scrim: #070a0ea6; /* 65% — more, not less. See the note in @theme. */
+
+  /* Glass, DARK: a LIGHT wash, and heavier. Subtracting light from something
+     that is already near-black does nothing; glass here is the sheen ON the
+     pane, not the shadow under it. */
+  --glass-fill: #ffffff14; /* 8% */
+  --glass-press: #ffffff26; /* 15% */
+  --glass-edge: #ffffff33; /* 20% */
+
+  color-scheme: dark;
+}
+
+/* On dark, a hairline does the work the shadow did. */
+[data-theme='dark'] .shadow-card {
+  border: 1px solid var(--ink-200);
+}
+
+/* The dialog carries a slightly brighter edge than a card, so it separates
+   from the cards it is floating over rather than looking like one of them. */
+[data-theme='dark'] .shadow-dialog {
+  border: 1px solid var(--ink-200);
+}
+
+html,
+#root {
+  min-height: 100dvh;
+}
+
+body {
+  min-height: 100dvh;
+  background: var(--page);
+  color: var(--ink-700);
+  -webkit-font-smoothing: antialiased;
+  font-size: 14px;
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+/**
+ * Identifiers that get transcribed by eye.
+ *
+ * PAN, GSTIN, FSSAI licence, bank reference, UUID. Somebody is reading these
+ * off a photograph of a document and typing them in, and a proportional font
+ * makes 0/O and 1/l/I ambiguous at exactly the point where a single wrong
+ * character sends a settlement to the wrong account.
+ */
+.ident {
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  font-variant-ligatures: none;
+  letter-spacing: 0.01em;
+}
+
+/**
+ * The display serif and the eyebrow, matching the customer app.
+ *
+ * Same two classes, same values, deliberately duplicated rather than shared:
+ * three separate Vite builds with no common stylesheet, and eighteen lines
+ * copied is cheaper than a package boundary for two rules.
+ *
+ * `tests/design/tokens.mjs` does NOT catch a missing one of these — it checks
+ * colour utilities against the theme, and these are plain classes. Nine uses in
+ * this app referenced them before they existed here, and the failure mode was
+ * silent: the serif simply did not apply and the headings rendered as ordinary
+ * bold sans, which looks like a design choice rather than a bug.
+ */
+.display {
+  font-family: ui-serif, Georgia, 'Times New Roman', serif;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  font-weight: 700;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 700;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+/**
+ * One focus ring, never removed.
+ *
+ * This console is more keyboard-driven than either other surface — it is a
+ * form-heavy tool used on a laptop, so tab order is the primary way through it
+ * rather than an accessibility afterthought.
+ */
+:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/** Hover and press, one rule, theme-agnostic. See the customer app's note. */
+.pressable {
+  transition: filter 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pressable:hover:not(:disabled) {
+    filter: brightness(1.05);
+  }
+}
+
+.pressable:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.pressable:disabled {
+  filter: none;
+  cursor: not-allowed;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--ink-100);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.5), transparent);
+  animation: shimmer 1.4s infinite;
+}
+
+[data-theme='dark'] .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/**
+ * ============================================================================
+ * GLASS — the hover and press treatment, in place of a red wash
+ * ============================================================================
+ *
+ * WHY NOT RED
+ *
+ * A tinted hover spends a semantic colour on a non-semantic event. Red in this
+ * app means one thing — the brand, and by extension the primary action — so a
+ * grid of dishes where every ADD button flushed red as the cursor swept past
+ * was announcing "important, important, important" at a pointer that was just
+ * on its way somewhere. Hover means "you are pointing at this". It should be
+ * legible and it should be silent.
+ *
+ * WHAT "GLASS" ACTUALLY BUYS
+ *
+ * Being honest about this: `backdrop-filter` blurs what is BEHIND the element,
+ * so it only reads as glass where something is behind it — the buttons over
+ * stall photographs, the controls on the red app bar, the offer carousel, the
+ * sheet headers. Over a flat white card there is nothing to blur and the effect
+ * degrades to the translucent wash alone. That is still the right answer,
+ * because the wash is the part that replaces the red; the blur is the part that
+ * makes it look deliberate where it can.
+ *
+ * `saturate` alongside the blur is what stops the frost going grey and dead
+ * over a colourful photograph.
+ *
+ * THREE STATES, NOT TWO
+ *
+ * Idle -> hover -> press must be three distinguishable steps. If press looks
+ * like hover, a tap on a slow connection gives no evidence it registered, and
+ * the customer taps again. `--glass-press` is roughly double `--glass-fill`
+ * for exactly that reason.
+ *
+ * THE `(hover: hover)` GUARD IS NOT OPTIONAL
+ *
+ * Without it a phone tap leaves the element stuck in its hover state until you
+ * tap somewhere else — the commonest mobile CSS bug there is. `.pressable`
+ * above already learned this; the same guard applies here.
+ */
+/**
+ * WHY `background-image` AND NOT `background-color`
+ *
+ * Half these controls already own an opaque background — the ADD button is
+ * `bg-surface`, the court card is `bg-surface`. Setting `background-color` on
+ * hover REPLACES that, so a white button would hover to "6% ink over whatever
+ * happens to be behind the card" — a different colour the moment anything
+ * changes behind it, and in a sheet or a modal, a hole. A gradient of one
+ * colour is a background-IMAGE, and images composite ON TOP of the colour
+ * instead of replacing it. The element keeps its own surface and gains a film.
+ */
+.glass-hover {
+  transition: background-image 140ms ease, border-color 140ms ease,
+    -webkit-backdrop-filter 140ms ease, backdrop-filter 140ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .glass-hover:hover:not(:disabled) {
+  }
+}
+
+.glass-hover:active:not(:disabled) {
+}
+
+.glass-hover:disabled {
+}
+
+/**
+ * The same material, but PERSISTENT — a thing that stays chosen.
+ *
+ * Separate from `.glass-hover` because selection and hover are different
+ * claims and must not look identical: if the selected filter looks exactly like
+ * whichever filter your cursor happens to be over, the rail has no state at
+ * all. So this is heavier, and it carries an EDGE — a hairline the hover
+ * treatment never draws. Weight and outline, rather than hue.
+ *
+ * It is applied unconditionally, not behind `(hover: hover)`, because it is not
+ * a pointer state. A phone must show it too.
+ */
+.glass-on {
+  background-image: linear-gradient(var(--glass-press), var(--glass-press));
+  border-color: var(--glass-edge);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  backdrop-filter: blur(14px) saturate(1.5);
+}
+
+/**
+ * A frosted RING, for things whose content is a photograph.
+ *
+ * The category rail used `ring-brand-500` to mark the chosen cuisine, which is
+ * a red circle drawn around a picture of food — the one place a red ring is
+ * genuinely ambiguous, because half the pictures have red in them. A light ring
+ * with a dark halo (or the inverse, per theme) separates from any photograph
+ * without competing with it, and it is the `--glass-edge` value doing the work
+ * so the whole treatment stays one vocabulary.
+ *
+ * Two shadows rather than a `ring`: the inner one sits ON the image edge and
+ * the outer one lifts it off the page, which is what makes a translucent
+ * outline survive a busy background.
+ */
+.glass-ring {
+  box-shadow:
+    0 0 0 2px var(--glass-edge),
+    0 0 0 4px var(--glass-fill),
+    0 2px 10px var(--glass-press);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-hover {
+    transition: none;
+  }
+}

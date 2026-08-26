@@ -3,6 +3,8 @@ import {
   vendorAvailability,
   customerFacingReason,
   itemAvailable,
+  itemReasonCopyKey,
+  itemState,
   type VendorAvailabilityInput,
 } from './availability.js';
 
@@ -111,17 +113,91 @@ describe('the customer never learns it was a device problem', () => {
   });
 });
 
-describe('item availability', () => {
-  it('respects the manual toggle', () => {
-    expect(itemAvailable({ isAvailable: false }, NOW)).toBe(false);
-    expect(itemAvailable({ isAvailable: true }, NOW)).toBe(true);
+describe('product, availability and inventory are three questions (PRD §6)', () => {
+  const ACTIVE = { status: 'ACTIVE', availability: 'AVAILABLE' } as const;
+
+  it('an available item on an active product is orderable', () => {
+    expect(itemState(ACTIVE, NOW)).toEqual({ orderable: true, reason: null, listed: true });
+  });
+
+  it('discontinued is not a kind of sold out — it is not on the menu', () => {
+    // The distinction that motivated the whole split. Under one boolean these
+    // were the same edit, so a vendor who ran out at 1pm deleted the item.
+    const gone = itemState({ status: 'INACTIVE', availability: 'AVAILABLE' }, NOW);
+    expect(gone.orderable).toBe(false);
+    expect(gone.reason).toBe('DISCONTINUED');
+    expect(gone.listed, 'a discontinued item must not be rendered at all').toBe(false);
+  });
+
+  it('sold out stays listed, so the customer sees it was a real choice', () => {
+    const out = itemState({ status: 'ACTIVE', availability: 'SOLD_OUT' }, NOW);
+    expect(out.orderable).toBe(false);
+    expect(out.listed).toBe(true);
   });
 
   it('auto-clears at the next service day (KDS-STK-03)', () => {
     // Vendors forget to re-enable items; customers should not pay for that.
-    const tomorrow = new Date('2026-08-11T04:00:00Z');
-    const item = { isAvailable: false, unavailableUntil: tomorrow };
+    // Derived at read time, so the item returns even if no sweeper ran.
+    const item = {
+      status: 'ACTIVE',
+      availability: 'SOLD_OUT',
+      availableFrom: new Date('2026-08-11T04:00:00Z'),
+    } as const;
     expect(itemAvailable(item, NOW)).toBe(false);
     expect(itemAvailable(item, new Date('2026-08-11T05:00:00Z'))).toBe(true);
+  });
+
+  it('a lapsed block beats a stale flag nobody cleared', () => {
+    const item = {
+      status: 'ACTIVE',
+      availability: 'TEMPORARILY_UNAVAILABLE',
+      availableFrom: new Date('2026-08-10T00:00:00Z'),
+    } as const;
+    expect(itemAvailable(item, NOW)).toBe(true);
+  });
+});
+
+describe('inventory only gates items that keep a count', () => {
+  it('an UNTRACKED item is orderable whatever remaining says', () => {
+    // `remaining` on an UNTRACKED item is a caller bug, not a reason to refuse
+    // the sale. The mode decides, never the presence of data.
+    const item = {
+      status: 'ACTIVE',
+      availability: 'AVAILABLE',
+      inventoryMode: 'UNTRACKED',
+      remaining: 0,
+    } as const;
+    expect(itemAvailable(item, NOW)).toBe(true);
+  });
+
+  it('a TRACKED item at zero is out of stock', () => {
+    const s = itemState(
+      { status: 'ACTIVE', availability: 'AVAILABLE', inventoryMode: 'TRACKED', remaining: 0 },
+      NOW,
+    );
+    expect(s.orderable).toBe(false);
+    expect(s.reason).toBe('OUT_OF_STOCK');
+  });
+
+  it('a TRACKED item with stock left is orderable', () => {
+    const s = itemState(
+      { status: 'ACTIVE', availability: 'AVAILABLE', inventoryMode: 'TRACKED', remaining: 1 },
+      NOW,
+    );
+    expect(s.orderable).toBe(true);
+  });
+
+  it('a TRACKED item already oversold stays refused rather than going negative twice', () => {
+    const s = itemState(
+      { status: 'ACTIVE', availability: 'AVAILABLE', inventoryMode: 'TRACKED', remaining: -2 },
+      NOW,
+    );
+    expect(s.orderable).toBe(false);
+  });
+
+  it('tells the customer the same thing for sold out and out of stock', () => {
+    // One is a switch a cook flipped, the other is a count reaching zero. That
+    // difference is the vendor's business and not the diner's.
+    expect(itemReasonCopyKey('SOLD_OUT')).toBe(itemReasonCopyKey('OUT_OF_STOCK'));
   });
 });

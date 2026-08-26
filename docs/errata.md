@@ -201,6 +201,125 @@ nothing — cannot recur silently.
 
 ---
 
+## E-006 — `payment_order_uq` made a retried payment impossible
+
+**Found:** 17 August 2026, while building the payment engine.
+**Severity:** high. It would have surfaced as a customer unable to pay after a
+declined first attempt, on a live pilot, at lunchtime.
+
+The initial schema had:
+
+```sql
+CREATE UNIQUE INDEX payment_order_uq ON payment (order_id);
+```
+
+One payment row per order, for ever. Three things the PRD requires are
+impossible under it:
+
+| Requirement | What it needs |
+| --- | --- |
+| §7.2 "a retry is a new payment on the same order" | a second row |
+| §8 "one order can have several payment attempts" | several rows |
+| §9 case A — pay, close the browser, come back and pay again | a second row |
+
+Under the old index the only way to record a second attempt was to overwrite
+the first, which destroys the evidence of what happened on it — precisely the
+record needed when a customer says they were charged twice.
+
+Worth being clear about what was *right* here: an order must never have two
+**live** intents at once, because that is how one basket produces two charges.
+That guarantee was real and worth keeping. The index simply stated it far too
+strongly, in a way that read as correct.
+
+**Fix:** migration `20260817000007` narrows it from "one ever" to "one at a
+time":
+
+```sql
+CREATE UNIQUE INDEX payment_one_live_per_order
+  ON payment (order_id)
+  WHERE status NOT IN ('FAILED', 'EXPIRED');
+```
+
+The predicate is an *exclusion* rather than a list of live states, deliberately.
+A payment state added later and classified by nobody then counts as live and
+restricts, rather than counting as dead and quietly permitting a second
+simultaneous charge. The safe direction for an unclassified value is "no".
+
+**Regression guard:** two constraint cases, not one. `a second LIVE payment on
+one order is rejected` proves the restriction still holds; `retrying after a
+failed payment IS allowed` proves the permission was actually granted. The
+second exists because the suite would otherwise have passed unchanged against
+the old index — **a check that only ever says "no" cannot tell you whether
+"yes" still works.** That is a new shape of the E-002 pattern and the reason
+this entry is worth reading twice.
+
+---
+
+## E-007 — `SUCCESS` could not express the interval the design depends on
+
+**Found:** 17 August 2026, applying PRD §8.
+**Severity:** medium, and structural rather than immediate.
+
+`payment_status` ran `INITIATED, PENDING, SUCCESS, FAILED, …`. Meanwhile
+`PAYMENTS_SPLIT_TIMING` already defaulted to `ON_ACKNOWLEDGED`, which means:
+block the money at checkout, take it when the kitchen accepts, release it if no
+stall ever does.
+
+That is authorise-then-capture, and `SUCCESS` cannot say which of the two has
+happened. The gap between them is not a detail — it is the entire mechanism
+that stops a customer being charged for food nobody agreed to make. It is also
+the shape of UPI single-block-multi-debit, which the PRD names as the correct
+long-term primitive.
+
+Nothing was broken, because nothing had been built on it yet. That is the only
+reason this was cheap: the states were wrong before any money passed through
+them.
+
+**Fix:** `AUTHORIZED`, `CAPTURED`, `EXPIRED` and `PARTIALLY_REFUNDED` added;
+`SUCCESS` and `INITIATED` retired behind a CHECK constraint, since PostgreSQL
+cannot drop an enum label. `succeeded_at` renamed `captured_at` — it carried
+the same ambiguity as the state it belonged to.
+
+**Regression guard:** `the retired SUCCESS payment status is refused`, plus
+`confirmationRequires()`, a one-line function whose only job is to make the
+split-timing dependency explicit rather than implied by the ordering of code.
+
+---
+
+## E-008 — nothing enforced that a confirmed order had been paid for
+
+**Found:** 17 August 2026.
+**Severity:** the highest in this document, and it was a gap rather than a bug.
+
+PRD §7.4 states the rule plainly: *no client request may transition an order
+into a financially authoritative state.* It was stated in a document, which
+means it was enforced by whoever last read the document. Any `UPDATE "order"
+SET status = 'PAYMENT_CONFIRMED'` — from a controller, a script, a psql session
+— succeeded, whether or not a rupee had moved.
+
+**Fix:** a trigger, because the check is cross-table and cannot be a CHECK:
+
+```sql
+CREATE TRIGGER order_confirmation_requires_payment
+  BEFORE UPDATE ON "order" ...
+```
+
+It refuses `PAYMENT_CONFIRMED` unless a payment on that order is already
+`AUTHORIZED` or `CAPTURED`.
+
+The immediate consequence was that `seed-orders.ts` stopped working, which is
+the constraint doing its job: the seed had been fabricating paid orders with no
+payment behind them. Its own header says fabricated rows "would produce a board
+that looks right and money that is fiction". It now writes the payment row the
+webhook would have written.
+
+**Regression guard:** `an order cannot become PAYMENT_CONFIRMED without an
+authorised payment`, with a control that confirms a *properly paid* order in
+the same test — otherwise the check would also pass on a database where
+`PAYMENT_CONFIRMED` is unreachable full stop.
+
+---
+
 ## The pattern
 
 E-002, E-004 and E-005 are the same mistake in different clothing: a guard
@@ -221,3 +340,22 @@ needed to make the violation meaningful, assert the control succeeds too — an
 earlier version of `test-constraints.ts` ran `INSERT ... SELECT ... LIMIT 1`
 against an empty database, inserted zero rows, threw nothing, and reported a
 false PASS on every single check.
+
+E-006 adds a corollary that took a while to see. That rule protects against a
+guard that does not refuse what it should. It says nothing about a guard that
+refuses *more* than it should — and `payment_order_uq` was exactly that: a
+constraint doing its job so enthusiastically that it forbade a documented
+requirement. A suite made entirely of "this must be rejected" cases cannot
+detect it, because every such case still passes.
+
+So: **where a rule permits something, test the permission too.** For every
+"this must be refused", ask what the adjacent legitimate act is, and assert
+that one succeeds. The pair is the specification; either half alone is a
+half-truth that reads like the whole.
+
+E-008 adds the other corollary, which is about where rules live. §7.4 was
+written down, agreed, and enforced by nothing. A rule in a document is enforced
+by whoever last read the document; a rule in a trigger is enforced by the
+database. Any invariant important enough to be stated in the PRD in bold should
+be asked, on the same day, whether it can be made a property of the schema —
+and if it cannot, why not.

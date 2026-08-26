@@ -2,8 +2,39 @@ openapi: 3.1.0
 
 info:
   title: Food Court QR Ordering Platform API
-  version: 1.0.0-pilot
+  version: 1.0.0-pilot-STALE
   description: |
+    # ⚠ THIS DOCUMENT IS STALE. DO NOT GENERATE A CLIENT FROM IT.
+
+    Superseded by `docs/prd.md` v7.0 and by the running code. It is kept only so
+    the divergence is visible; every disagreement below resolves in favour of
+    the implementation.
+
+    The warning lives here, in the file itself, rather than only in the PRD.
+    Somebody who opens this directly — to generate a client, to check a field
+    name, to write an integration — would otherwise get no warning at all, and
+    a stale contract read in good faith produces confidently wrong code.
+
+    ## What is known to be wrong
+
+    | Here | Actually |
+    | --- | --- |
+    | `/qr/{token}` returns a `table` object | It resolves to a FOOD COURT. The table concept was removed — PRD §2.1 |
+    | Order status `COMPLETED` | `COLLECTED`. Cooked and handed over are different events — PRD §7.1 |
+    | Payment status `SUCCESS` | `AUTHORIZED` and `CAPTURED` are separate states — PRD §8.1 |
+    | Menu item `is_available` boolean | `status` / `availability` / `inventory_mode`, three concepts — PRD §6 |
+    | `POST /kds/orders/{id}/complete` | `/collect` |
+    | no session or OTP endpoints | `/auth/otp/request`, `/auth/otp/verify` exist — PRD §11.2 |
+    | no payment endpoints | `/orders/{id}/payment-intent`, `/webhooks/payments`, `/orders/{id}/payment` exist |
+    | no inventory endpoints | `/vendor/items`, `/vendor/items/{id}/availability`, `/vendor/items/{id}/stock` exist |
+
+    `npm run codegen:api` reads this file. Until it is regenerated, running that
+    script produces types that contradict the server.
+
+    Tracked as PRD §19 decision 6 and §19.4.
+
+    ---
+
     Companion to PRD v5.1 and the Technical Design Document.
 
     ## Conventions

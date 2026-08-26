@@ -43,6 +43,10 @@ const ids = {
   cart: randomUUID(),
   session: randomUUID(),
   order: randomUUID(),
+  /** A second order, used as the CONTROL for the payment-confirmation trigger. */
+  orderPaid: randomUUID(),
+  payment: randomUUID(),
+  customer: randomUUID(),
 };
 
 async function seed(c: pg.PoolClient): Promise<void> {
@@ -92,6 +96,17 @@ async function seed(c: pg.PoolClient): Promise<void> {
      VALUES ($1,'A-001',$2,$3,$4,'PLATFORM_COLLECT','{}','{}',25000,1250,26250,$5,'corr-1')`,
     [ids.order, ids.court, ids.vendorA, ids.tableA, 'idem-seed'],
   );
+  // A second order in PAYMENT_PENDING. The confirmation-trigger case needs one
+  // order it can legitimately confirm and one it cannot, or the check would
+  // pass on a database where PAYMENT_CONFIRMED is unreachable full stop.
+  await c.query(
+    `INSERT INTO "order" (id, public_order_number, food_court_id, vendor_id, court_table_id,
+       settlement_mode_snapshot, fee_rule_snapshot, tax_model_snapshot,
+       subtotal_paise, food_tax_paise, total_payable_paise, idempotency_key, correlation_id, status)
+     VALUES ($1,'A-900',$2,$3,$4,'PLATFORM_COLLECT','{}','{}',25000,1250,26250,$5,'corr-2','PAYMENT_PENDING')`,
+    [ids.orderPaid, ids.court, ids.vendorA, ids.tableA, 'idem-seed-paid'],
+  );
+  await c.query(`UPDATE "order" SET status = 'PAYMENT_PENDING' WHERE id = $1`, [ids.order]);
 }
 
 interface Case {
@@ -141,8 +156,8 @@ const cases: Case[] = [
     },
   },
   {
-    name: 'duplicate payment for one order is rejected',
-    requirement: 'PRD §18.3 — one payment intent per order',
+    name: 'a second LIVE payment on one order is rejected',
+    requirement: 'PRD §8 — one basket must never produce two simultaneous charges',
     control: async (c) => {
       await c.query(
         `INSERT INTO payment (order_id, settlement_mode, provider, amount_paise)
@@ -154,6 +169,36 @@ const cases: Case[] = [
       await c.query(
         `INSERT INTO payment (order_id, settlement_mode, provider, amount_paise)
          VALUES ($1,'PLATFORM_COLLECT','stub',26250)`,
+        [ids.order],
+      );
+    },
+  },
+  {
+    // The other half of the rule above, and the reason the index is partial.
+    // Without this case the suite would happily pass on the plain unique index
+    // that made retrying impossible — a check that only ever says "no" cannot
+    // tell you whether "yes" still works.
+    name: 'retrying after a failed payment IS allowed',
+    requirement: 'PRD §7.2 — a retry is a new payment on the same order, not an overwrite',
+    control: async (c) => {
+      await c.query(
+        `INSERT INTO payment (order_id, settlement_mode, provider, amount_paise, status)
+         VALUES ($1,'PLATFORM_COLLECT','stub',26250,'FAILED')`,
+        [ids.order],
+      );
+      // The retry. This is the assertion; it must NOT throw.
+      await c.query(
+        `INSERT INTO payment (order_id, settlement_mode, provider, amount_paise, status)
+         VALUES ($1,'PLATFORM_COLLECT','stub',26250,'PENDING')`,
+        [ids.order],
+      );
+    },
+    violate: async (c) => {
+      // A third payment while the retry above is still live must be refused,
+      // so the permissiveness has a floor.
+      await c.query(
+        `INSERT INTO payment (order_id, settlement_mode, provider, amount_paise, status)
+         VALUES ($1,'PLATFORM_COLLECT','stub',26250,'PENDING')`,
         [ids.order],
       );
     },
@@ -197,7 +242,7 @@ const cases: Case[] = [
       );
     },
     violate: async (c) => {
-      await c.query(`UPDATE order_status_history SET to_status = 'COMPLETED' WHERE order_id = $1`, [
+      await c.query(`UPDATE order_status_history SET to_status = 'COLLECTED' WHERE order_id = $1`, [
         ids.order,
       ]);
     },
@@ -241,6 +286,257 @@ const cases: Case[] = [
         `INSERT INTO cart_item (cart_id, menu_item_id, vendor_id, quantity)
          VALUES ($1,$2,$3,1)`,
         [ids.cart, ids.item, ids.vendorB],
+      );
+    },
+  },
+  // =========================================================================
+  // The vocabulary migrations — 20260817000006 / 007
+  // =========================================================================
+  {
+    name: 'the retired COMPLETED status is refused on an order',
+    requirement: 'PRD §7.1 — COLLECTED replaced it; the enum label cannot be dropped',
+    control: async (c) => {
+      // Proves the UPDATE reaches the row and that a status change is possible
+      // at all. Without it the violation below could be matching nothing and
+      // reporting a false pass — the exact bug that made an earlier version of
+      // this script report 12 green checks against an empty database.
+      await c.query(`UPDATE "order" SET status = 'READY' WHERE id = $1`, [ids.order]);
+    },
+    violate: async (c) => {
+      await c.query(`UPDATE "order" SET status = 'COMPLETED' WHERE id = $1`, [ids.order]);
+    },
+  },
+  {
+    name: 'the retired SUCCESS payment status is refused',
+    requirement: 'PRD §8.1 — SUCCESS cannot express the gap between blocked and taken',
+    control: async (c) => {
+      await c.query(
+        `INSERT INTO payment (id, order_id, settlement_mode, provider, amount_paise, status)
+         VALUES ($1,$2,'PLATFORM_COLLECT','stub',26250,'PENDING')`,
+        [ids.payment, ids.order],
+      );
+    },
+    violate: async (c) => {
+      await c.query(`UPDATE payment SET status = 'SUCCESS' WHERE id = $1`, [ids.payment]);
+    },
+  },
+  {
+    name: 'an AUTHORIZED payment without a timestamp is refused',
+    requirement: 'PRD §8.1 — a state that asserts an event must carry when it happened',
+    control: async (c) => {
+      await c.query(
+        `INSERT INTO payment (id, order_id, settlement_mode, provider, amount_paise, status, authorized_at)
+         VALUES ($1,$2,'PLATFORM_COLLECT','stub',26250,'AUTHORIZED', now())`,
+        [randomUUID(), ids.order],
+      );
+    },
+    violate: async (c) => {
+      await c.query(
+        `INSERT INTO payment (id, order_id, settlement_mode, provider, amount_paise, status)
+         VALUES ($1,$2,'PLATFORM_COLLECT','stub',26250,'AUTHORIZED')`,
+        [randomUUID(), ids.order],
+      );
+    },
+  },
+  {
+    name: 'PARTIALLY_REFUNDED with the full amount refunded is refused',
+    requirement: 'PRD §8.1 — the label and the number must agree',
+    violate: async (c) => {
+      await c.query(
+        `INSERT INTO payment (id, order_id, settlement_mode, provider, amount_paise, status, refunded_paise)
+         VALUES ($1,$2,'PLATFORM_COLLECT','stub',26250,'PARTIALLY_REFUNDED',26250)`,
+        [randomUUID(), ids.order],
+      );
+    },
+  },
+  {
+    name: 'refunding more than was charged is refused',
+    requirement: 'PRD §14.7 — a refund cannot exceed the payment it reverses',
+    violate: async (c) => {
+      await c.query(
+        `INSERT INTO payment (id, order_id, settlement_mode, provider, amount_paise, status, refunded_paise)
+         VALUES ($1,$2,'PLATFORM_COLLECT','stub',26250,'REFUNDED',30000)`,
+        [randomUUID(), ids.order],
+      );
+    },
+  },
+
+  // =========================================================================
+  // The binding rule. The most important check in this file.
+  // =========================================================================
+  {
+    name: 'an order cannot become PAYMENT_CONFIRMED without an authorised payment',
+    requirement:
+      'PRD §7.4 / §8.2 — no client request may transition an order into a financially ' +
+      'authoritative state. A browser saying "it worked" is a hint, not evidence.',
+    control: async (c) => {
+      // The control proves the same UPDATE succeeds once a real payment backs
+      // it. Without this the check would also pass on a database where nothing
+      // can ever reach PAYMENT_CONFIRMED, which is not the property we want.
+      await c.query(
+        `INSERT INTO payment (order_id, settlement_mode, provider, amount_paise, status, authorized_at)
+         VALUES ($1,'PLATFORM_COLLECT','stub',26250,'AUTHORIZED', now())`,
+        [ids.orderPaid],
+      );
+      await c.query(`UPDATE "order" SET status = 'PAYMENT_CONFIRMED' WHERE id = $1`, [
+        ids.orderPaid,
+      ]);
+    },
+    violate: async (c) => {
+      // ids.order has no AUTHORIZED or CAPTURED payment on it.
+      await c.query(`UPDATE "order" SET status = 'PAYMENT_CONFIRMED' WHERE id = $1`, [ids.order]);
+    },
+  },
+
+  // =========================================================================
+  // Product / availability / inventory — 20260817000008
+  // =========================================================================
+  {
+    name: 'an AVAILABLE item with a future available_from is refused',
+    requirement: 'PRD §6 — availability and its expiry must not contradict each other',
+    control: async (c) => {
+      await c.query(
+        `UPDATE menu_item SET availability = 'SOLD_OUT', available_from = now() + interval '1 hour'
+         WHERE id = $1`,
+        [ids.item],
+      );
+    },
+    violate: async (c) => {
+      await c.query(
+        `UPDATE menu_item SET availability = 'AVAILABLE', available_from = now() + interval '1 hour'
+         WHERE id = $1`,
+        [ids.item],
+      );
+    },
+  },
+  {
+    name: 'negative daily stock is refused',
+    requirement: 'PRD §6 — a count of how many exist cannot be less than none',
+    control: async (c) => {
+      await c.query(
+        `INSERT INTO menu_item_stock (menu_item_id, service_date, daily_stock)
+         VALUES ($1, CURRENT_DATE, 50)`,
+        [ids.item],
+      );
+    },
+    violate: async (c) => {
+      await c.query(`UPDATE menu_item_stock SET daily_stock = -1 WHERE menu_item_id = $1`, [
+        ids.item,
+      ]);
+    },
+  },
+  {
+    name: 'UPDATE on menu_item_stock_history is refused',
+    requirement: '"who set this to zero at 12:40" needs an answer nobody can edit',
+    control: async (c) => {
+      await c.query(
+        `INSERT INTO menu_item_stock_history (menu_item_id, service_date, new_stock, actor_type)
+         VALUES ($1, CURRENT_DATE, 50, 'VENDOR_USER')`,
+        [ids.item],
+      );
+    },
+    violate: async (c) => {
+      await c.query(`UPDATE menu_item_stock_history SET new_stock = 0 WHERE menu_item_id = $1`, [
+        ids.item,
+      ]);
+    },
+  },
+  {
+    name: 'TRUNCATE on menu_item_stock_history is refused',
+    requirement: 'TRUNCATE is a separate trigger event; a DELETE trigger does not fire for it',
+    violate: async (c) => {
+      await c.query(`TRUNCATE TABLE menu_item_stock_history`);
+    },
+  },
+
+  // =========================================================================
+  // Customer identity — 20260817000009
+  // =========================================================================
+  {
+    name: 'a customer phone that is not E.164 is refused',
+    requirement:
+      'PRD §11.2 — "9876543210" and "+91 98765 43210" are one customer and two rows ' +
+      'unless normalisation is enforced rather than remembered',
+    control: async (c) => {
+      await c.query(`INSERT INTO customer (id, phone) VALUES ($1,'+919876543210')`, [ids.customer]);
+    },
+    violate: async (c) => {
+      await c.query(`INSERT INTO customer (id, phone) VALUES ($1,'9876543210')`, [randomUUID()]);
+    },
+  },
+  {
+    name: 'two customers cannot share a phone number',
+    requirement: 'PRD §11.2 — the phone IS the identity',
+    control: async (c) => {
+      await c.query(`INSERT INTO customer (id, phone) VALUES ($1,'+919876543210')`, [ids.customer]);
+    },
+    violate: async (c) => {
+      await c.query(`INSERT INTO customer (id, phone) VALUES ($1,'+919876543210')`, [randomUUID()]);
+    },
+  },
+  {
+    name: 'a second live OTP for one phone is refused',
+    requirement:
+      'PRD §11.2 — requesting a new code must invalidate the old one, or both work and ' +
+      'the window in which an overheard code is useful doubles with every resend',
+    control: async (c) => {
+      await c.query(
+        `INSERT INTO customer_otp (phone, code_hash, channel, expires_at)
+         VALUES ('+919812345678','h1','CONSOLE', now() + interval '5 minutes')`,
+      );
+    },
+    violate: async (c) => {
+      await c.query(
+        `INSERT INTO customer_otp (phone, code_hash, channel, expires_at)
+         VALUES ('+919812345678','h2','CONSOLE', now() + interval '5 minutes')`,
+      );
+    },
+  },
+  {
+    name: 'an OTP cannot be both consumed and superseded',
+    requirement: 'a code has one ending, and reporting two makes the audit meaningless',
+    violate: async (c) => {
+      await c.query(
+        `INSERT INTO customer_otp (phone, code_hash, channel, expires_at, consumed_at, superseded_at)
+         VALUES ('+919811111111','h3','CONSOLE', now() + interval '5 minutes', now(), now())`,
+      );
+    },
+  },
+
+  {
+    name: 'a fee rule paying a court operator is refused',
+    requirement:
+      'Two parties split an order: the vendor and the platform. The product is sold ' +
+      'direct to vendors, so there is no operator with a settlement account. A rule ' +
+      'allocating a share to one is not a pricing decision, it is a leak — and it ' +
+      'would only surface in a settlement report months later.',
+    violate: async (c) => {
+      await c.query(
+        `INSERT INTO fee_rule (scope, party, fee_type, rate_bps, tax_rate_bps, allowed_modes, version, effective_from)
+         VALUES ('PLATFORM_DEFAULT','OPERATOR','PERCENTAGE',100,1800,ARRAY['PLATFORM_COLLECT']::settlement_mode[],1,now())`,
+      );
+    },
+  },
+  {
+    name: 'the two parties that remain are still accepted',
+    requirement: 'PRD §14.1 — charge the vendor, the customer, both, or neither',
+    // The control IS the assertion here. A constraint made entirely of "no"
+    // cannot tell you whether the thing you still need has survived it —
+    // errata E-006, in its second incarnation.
+    control: async (c) => {
+      await c.query(
+        `INSERT INTO fee_rule (scope, party, fee_type, rate_bps, tax_rate_bps, allowed_modes, version, effective_from)
+         VALUES ('PLATFORM_DEFAULT','VENDOR','PERCENTAGE',300,1800,ARRAY['PLATFORM_COLLECT']::settlement_mode[],1,now())`,
+      );
+      await c.query(
+        `INSERT INTO fee_rule (scope, party, fee_type, amount_paise, tax_rate_bps, allowed_modes, version, effective_from)
+         VALUES ('PLATFORM_DEFAULT','CUSTOMER','FLAT_PER_ORDER',500,1800,ARRAY['PLATFORM_COLLECT']::settlement_mode[],1,now())`,
+      );
+    },
+    violate: async (c) => {
+      await c.query(
+        `INSERT INTO fee_rule (scope, party, fee_type, rate_bps, tax_rate_bps, allowed_modes, version, effective_from)
+         VALUES ('PLATFORM_DEFAULT','OPERATOR','PERCENTAGE',100,1800,ARRAY['PLATFORM_COLLECT']::settlement_mode[],1,now())`,
       );
     },
   },

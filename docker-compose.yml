@@ -1,5 +1,21 @@
 # Local development only. Staging and production run managed Postgres and Redis
 # on a private network with no public endpoint. See docs/tech/infrastructure.md.
+#
+# ---------------------------------------------------------------------------
+# THE HOST PORTS ARE OVERRIDABLE, AND THAT IS NOT A NICETY
+# ---------------------------------------------------------------------------
+#
+# Plenty of machines already run a Homebrew or Postgres.app server on 5432.
+# When they do, this container either fails to bind or — worse — binds nothing
+# and the app reaches the OTHER server using these credentials. That surfaces
+# as "authentication failed", which sends you looking for a password problem
+# when the real fault is that you are talking to the wrong database entirely.
+#
+# So set POSTGRES_PORT (and REDIS_PORT) in `.env` to move the container out of
+# the way instead of stopping a server you may want for something else. The
+# defaults keep the original behaviour for anyone with a clear 5432.
+#
+# `npm run db:doctor` reports which server you are actually reaching.
 
 services:
   postgres:
@@ -9,7 +25,7 @@ services:
       POSTGRES_PASSWORD: foodcourt
       POSTGRES_DB: foodcourt
     ports:
-      - '5432:5432'
+      - '${POSTGRES_PORT:-5432}:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +38,7 @@ services:
     image: redis:7
     command: ['redis-server', '--appendonly', 'yes']
     ports:
-      - '6379:6379'
+      - '${REDIS_PORT:-6379}:6379'
     volumes:
       - redisdata:/data
     healthcheck:

@@ -1,0 +1,1053 @@
+@import 'tailwindcss';
+
+/**
+ * Customer PWA theme. See DESIGN.md for the reasoning behind every value here.
+ *
+ * TWO THEMES, ONE SET OF NAMES
+ *
+ * Every colour is a CSS custom property and the themes swap the VALUES, never
+ * the names. No component knows which theme it is in, which is what stops
+ * `dark:` variants sprawling across ninety class strings and being forgotten in
+ * three of them.
+ *
+ * LIGHT IS THE DEFAULT HERE, AND IT IS NOT A PREFERENCE
+ *
+ * A phone screen in a food court competes with daylight. Light-on-dark loses
+ * that fight — the backlight goes up and the screen still washes out. The
+ * kitchen board defaults the other way for the opposite reason: a bright screen
+ * glaring at somebody over a hot range for eight hours is fatiguing.
+ */
+
+/**
+ * `@theme inline`, NOT plain `@theme`.
+ *
+ * With plain `@theme`, Tailwind emits `--color-brand-500: var(--brand-500)` into
+ * its own `:root` inside a cascade layer, and a utility compiles to
+ * `var(--color-brand-500)` — one more hop, resolved against whatever
+ * `--brand-500` happens to be on that element. It does work, but only because of
+ * how custom-property substitution interacts with layers, and "works for a
+ * reason you have to reconstruct from the spec" is not a foundation to put two
+ * themes on.
+ *
+ * `inline` compiles `bg-brand-500` straight to `background-color:
+ * var(--brand-500)`. One hop, resolved in the element's own cascade, no layer
+ * question. It is the pattern Tailwind's own `data-theme` guidance uses.
+ *
+ * The cost: `--color-*` is no longer emitted, so nothing may reference
+ * `var(--color-veg-500)`. That is why the raw names below are declared directly
+ * in `:root` and why `VegMark` reads `var(--veg-500)`.
+ */
+@theme inline {
+  /* ---- Brand. ONE accent. ------------------------------------------------ */
+  --color-brand-50: var(--brand-50);
+  --color-brand-100: var(--brand-100);
+  --color-brand-200: var(--brand-200);
+  --color-brand-500: var(--brand-500);
+  --color-brand-600: var(--brand-600);
+  --color-brand-700: var(--brand-700);
+
+  /*
+   * FILLED BRAND SURFACES AND THE TEXT THAT SITS ON THEM.
+   *
+   * These three exist because the obvious thing — `bg-brand-500 text-white` —
+   * does not pass WCAG AA, in EITHER theme, and building the dark theme is what
+   * exposed it:
+   *
+   *   white on #E8483F  = 3.87:1   (light, needs 4.5 for a 15px bold label)
+   *   white on #FF5A50  = 3.07:1   (dark, worse — a lifted red is a paler red)
+   *
+   * So the fill is a step darker than the identity red in light mode, and in
+   * dark mode the text INVERTS to near-black rather than the fill getting
+   * darker. That is the only way a saturated red button works on a dark page:
+   * dark-on-light within a dark theme.
+   *
+   *   white   on #CF3A32 = 4.91:1  ✓ light
+   *   #12151A on #FF5A50 = 6.02:1  ✓ dark
+   *
+   * `brand-500` keeps its original value and its job — identity, borders, the
+   * focus ring, and icons. It is simply no longer a background for small text.
+   */
+  --color-brand-fill: var(--brand-fill);
+  --color-on-brand: var(--on-brand);
+  --color-on-brand-muted: var(--on-brand-muted);
+
+  /*
+   * Dietary marks. FSSAI packaging and labelling rules mandate a
+   * distinguishing mark for vegetarian and non-vegetarian food, so these are
+   * FIXED — identical in both themes and never adjusted for aesthetics.
+   *
+   * Declared in the theme-independent `:root` block below, not inside a theme,
+   * so there is exactly ONE place each of these values exists. A second
+   * declaration is all it would take for a dark-mode tweak to recolour a
+   * legally-mandated mark.
+   */
+  --color-veg-500: var(--veg-500);
+  --color-nonveg-500: var(--nonveg-500);
+  --color-egg-500: var(--egg-500);
+
+  /*
+   * The "Veg only" filter's active fill — a UI colour, not the mark.
+   *
+   * Distinct from `veg-500` because the two are different KINDS of thing. The
+   * mark is a legal requirement with a fixed value; the filter chip is a button
+   * that happens to be green, and buttons have to carry a label. White on
+   * `veg-500` is 4.43:1 — under AA, and not fixable by changing the mark,
+   * because the mark is not ours to change.
+   */
+  --color-veg-fill: var(--veg-fill);
+
+  /* ---- Semantic. Distinct from veg green: one is a dietary fact, the other
+         a system state. ----------------------------------------------------- */
+  --color-fresh-50: var(--fresh-50);
+  --color-fresh-500: var(--fresh-500);
+  --color-fresh-700: var(--fresh-700);
+
+  --color-warn-50: var(--warn-50);
+  --color-warn-500: var(--warn-500);
+  --color-warn-700: var(--warn-700);
+
+  --color-alert-50: var(--alert-50);
+  --color-alert-500: var(--alert-500);
+
+  /*
+   * The full-bleed payment-success page.
+   *
+   * Its own token rather than `fresh-500`, for two reasons. `fresh-500` has to
+   * stay bright enough to read as a status dot on a card, and white on the
+   * light-mode value is 3.19:1 — fine for the 30px headline, under AA for the
+   * 17px amount beneath it. And in dark mode a full screen of #2ECC71 at the
+   * moment someone completes a payment is a flashbang.
+   *
+   *   white on #147A45 = 5.39:1  ✓ light
+   *   white on #10331F = 13.9:1  ✓ dark
+   */
+  --color-success-page: var(--success-page);
+
+  /*
+   * FULL-BLEED STATUS BANNERS (the tracking screen's header).
+   *
+   * Separate from the status colours because a banner has different physics: it
+   * is a background carrying white text, whereas `warn-500` and `fresh-500` are
+   * tuned to be legible AS text or as a dot on a card. Reusing them as banners
+   * was a real failure, not a theoretical one:
+   *
+   *   white on warn-500  #E5A50A = 2.16:1   ← the "payment not completed" header
+   *   white on fresh-500 #1BA55C = 3.19:1
+   *
+   * Both were carrying 13px and 14px text. Every banner value below is deep
+   * enough that white clears 4.5:1 in both themes, so `--on-banner` can be a
+   * constant and no component has to reason about it.
+   */
+  --color-banner-wait: var(--banner-wait); /* placed, cooking */
+  --color-banner-ready: var(--banner-ready); /* on the counter */
+  --color-banner-attention: var(--banner-attention); /* unpaid — needs the customer */
+  --color-banner-alert: var(--banner-alert); /* rejected, expired, cancelled */
+  --color-on-banner: #ffffff;
+
+  /* ---- Ink and surfaces. One gray family, cool-tinted throughout. -------- */
+  --color-ink-900: var(--ink-900);
+  --color-ink-800: var(--ink-800);
+  --color-ink-700: var(--ink-700);
+  --color-ink-500: var(--ink-500);
+  --color-ink-400: var(--ink-400);
+  --color-ink-200: var(--ink-200);
+  --color-ink-100: var(--ink-100);
+  --color-ink-50: var(--ink-50);
+
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+
+  /*
+   * The dialog scrim.
+   *
+   * A token because the right wash is theme-dependent, like everything else
+   * here. Over a white menu a near-black at 45% reads as "dimmed and waiting";
+   * over the dark theme the same value barely registers, because there was
+   * little light to take away — so dark gets MORE, not less.
+   */
+  --color-scrim: var(--scrim);
+
+  /*
+   * GLASS — what a thing looks like when you point at it or press it.
+   *
+   * These replace the red washes. `hover:bg-brand-50` said "this button is
+   * about to become important" in a hue the app reserves for one meaning, and
+   * on a card full of red ADD buttons the whole grid lit up as the cursor
+   * crossed it. Hover is not a semantic event; it should not spend a semantic
+   * colour.
+   *
+   * Three, not one, because hover and press must be distinguishable — if
+   * pressing looks exactly like hovering, a click on a slow connection gives no
+   * feedback that it registered.
+   */
+  --color-glass-fill: var(--glass-fill);
+  --color-glass-press: var(--glass-press);
+  --color-glass-edge: var(--glass-edge);
+
+  --radius-card: 1rem;
+  --radius-tile: 0.875rem;
+
+  --shadow-card: var(--elev-card);
+  --shadow-bar: var(--elev-bar);
+  --shadow-add: var(--elev-add);
+  /*
+   * Deeper than a card's, because a dialog is not ON the page — it is OVER it.
+   *
+   * The console has had this since its modals landed; the customer app has not
+   * needed it until now, and the section sheet on the stall page is the first
+   * thing here that genuinely floats. Using `shadow-dialog` without declaring
+   * it generated NOTHING — the sheet rendered with no elevation at all, over a
+   * page of photographs, and only the token check caught it.
+   */
+  --shadow-dialog: var(--elev-dialog);
+}
+
+/* ============================================================================
+   LIGHT — the default for customers
+   ========================================================================= */
+/**
+ * THEME-INDEPENDENT VALUES.
+ *
+ * The FSSAI dietary marks live here rather than in either theme block, so each
+ * value exists in exactly one place. A second declaration is all it would take
+ * for a well-meaning dark-mode tweak to recolour a legally-mandated mark, and
+ * `tests/design/contrast.mjs` asserts that each is declared exactly once.
+ */
+:root {
+  --veg-500: #0f8a45;
+  --nonveg-500: #9c2b1f;
+  --egg-500: #d99b12;
+
+  /* Same hue, darkened until white clears AA: 6.41:1. */
+  --veg-fill: #0c6e37;
+}
+
+:root,
+[data-theme='light'] {
+  --brand-50: #fff1f0;
+  --brand-100: #ffdedb;
+  --brand-200: #ffbdb7;
+  --brand-500: #e8483f;
+  --brand-600: #cf3a32;
+  --brand-700: #a92d26;
+
+  --brand-fill: #cf3a32; /* white on this = 4.91:1 */
+  --on-brand: #ffffff;
+  --on-brand-muted: #fff4f3; /* on brand-fill = 4.56:1 */
+
+  --fresh-50: #ecf8f1;
+  --fresh-500: #1ba55c;
+  --fresh-700: #157a44;
+  --success-page: #147a45;
+
+  --warn-50: #fff8e8;
+  --warn-500: #e5a50a;
+  --warn-700: #7a5602; /* darkened: #A97A04 was 3.63:1 on warn-50 */
+
+  --alert-50: #fef2f2;
+  --alert-500: #c92418; /* darkened: #D92D20 was 4.42:1 on alert-50 */
+
+  --banner-wait: #cf3a32; /* white = 4.91:1 */
+  --banner-ready: #147a45; /* white = 5.39:1 */
+  --banner-attention: #8a5b00; /* white = 5.87:1 */
+  --banner-alert: #232a33; /* white = 14.3:1 */
+
+  --ink-900: #12151a;
+  --ink-800: #232a33;
+  --ink-700: #3c4553;
+  --ink-500: #656e7d; /* darkened: #6E7787 was 4.14:1 on the page tint */
+  --ink-400: #9aa2b1;
+  --ink-200: #e7e9ee;
+  --ink-100: #f1f3f6;
+  --ink-50: #f7f8fa;
+
+  /* Not #FFF. A white card needs something to lift off. */
+  --page: #f4f5f7;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+
+  /* Shadows carry the page's hue rather than neutral black — the audit's
+     "generic box-shadow" finding. */
+  --elev-card: 0 1px 2px rgb(18 21 26 / 0.04), 0 4px 12px rgb(18 21 26 / 0.05);
+  --elev-bar: 0 -2px 16px rgb(18 21 26 / 0.08);
+  --elev-add: 0 2px 8px rgb(232 72 63 / 0.18);
+  /* The floating action's glow. Brand-tinted, so the button reads as lit. */
+  --elev-action-glow: rgb(207 58 50 / 0.30);
+  --elev-dialog: 0 12px 32px rgb(18 21 26 / 0.18), 0 2px 8px rgb(18 21 26 / 0.08);
+
+  --scrim: #12151a73; /* 45% */
+
+  /*
+   * Glass, LIGHT: a DARK wash. The page here is pale, so a white translucent
+   * film over a white card is literally nothing — the classic glassmorphism
+   * mistake, copied from dark-mode screenshots where it works. What reads as
+   * glass on a light surface is a faint shadow of the thing behind it.
+   */
+  --glass-fill: #12151a0f; /* 6% */
+  --glass-press: #12151a1f; /* 12% */
+  --glass-edge: #12151a29; /* 16% */
+
+  color-scheme: light;
+}
+
+/* ============================================================================
+   DARK — available to customers, default for the kitchen
+   ========================================================================= */
+[data-theme='dark'] {
+  /* Lifted and slightly desaturated. The light-mode red is too heavy against a
+     dark surface and reads as a warning rather than an action. */
+  --brand-50: #2a1210;
+  --brand-100: #4a1d1a;
+  --brand-200: #6b2a25;
+  /*
+   * The brand ramp INVERTS in dark, exactly as the ink ramp does.
+   *
+   * Keeping 600 and 700 dark here looked reasonable and broke the one place
+   * they are used: `text-brand-700` is the ADD label, sitting on a card. On a
+   * dark card #CF3A32 is 3.51:1 — an unreadable button on the most-tapped
+   * control in the app. The rule that makes this impossible to get wrong is the
+   * same one the ink scale follows: a HIGHER number is always more prominent
+   * against the page, whichever way the page happens to be lit.
+   */
+  --brand-500: #ff5a50;
+  --brand-600: #ff7b73;
+  --brand-700: #ff9d96;
+
+  /* The fill stays bright and the TEXT goes dark. See the note in @theme. */
+  --brand-fill: #ff5a50; /* #12151A on this = 6.02:1 */
+  --on-brand: #12151a;
+  --on-brand-muted: #3a1512; /* on brand-fill = 5.32:1 */
+
+  --fresh-50: #10261a;
+  --fresh-500: #2ecc71;
+  --fresh-700: #6ee7a5;
+  --success-page: #10331f;
+
+  --warn-50: #2a2110;
+  --warn-500: #f5b82e;
+  --warn-700: #ffd77a;
+
+  --alert-50: #2c1512;
+  --alert-500: #ff5a4e;
+
+  /* Deeper still. A saturated banner across the top of a dark page is the
+     brightest thing in the room; these keep the hue and drop the light. */
+  --banner-wait: #7a1f19; /* white = 10.4:1 */
+  --banner-ready: #10331f; /* white = 13.9:1 */
+  --banner-attention: #4a3410; /* white = 11.7:1 */
+  --banner-alert: #1c232b; /* white = 15.9:1 */
+
+  /* Ink inverts. The NAMES keep their meaning — ink-900 is still "the most
+     prominent text" — which is why no component has to branch. */
+  --ink-900: #f2f5f8;
+  --ink-800: #dbe2ea;
+  --ink-700: #c2cbd6;
+  --ink-500: #8b97a6;
+  --ink-400: #6e7a88;
+  --ink-200: #2a323c;
+  --ink-100: #232a33;
+  --ink-50: #1b212a;
+
+  /* Never pure black. A tinted charcoal keeps the same cool hue family as
+     light mode, so the two themes are recognisably one product. */
+  --page: #0e1116;
+  --surface: #171c23;
+  --surface-raised: #1f252e;
+
+  /*
+   * Shadows barely read on dark surfaces, so elevation is carried by a
+   * hairline instead. `--elev-card` is set to `none` and components add a
+   * border — see the `[data-theme='dark'] .elev-card` rule below.
+   */
+  --elev-card: none;
+  --elev-bar: none;
+  --elev-add: 0 2px 8px rgb(255 90 80 / 0.22);
+  /* Brighter on a dark page: a glow has to out-light its surroundings. */
+  --elev-action-glow: rgb(255 90 80 / 0.34);
+  /* Shadows barely read on a dark page; the sheet's hairline does the work.
+     Kept as a token rather than dropped, so the class stays valid in both. */
+  --elev-dialog: none;
+
+  --scrim: #070a0eb8; /* 72% — see the note in @theme */
+
+  /* Glass, DARK: a LIGHT wash, and heavier. Subtracting light from something
+     that is already near-black does nothing; glass here is the sheen ON the
+     pane, not the shadow under it. */
+  --glass-fill: #ffffff14; /* 8% */
+  --glass-press: #ffffff26; /* 15% */
+  --glass-edge: #ffffff33; /* 20% */
+
+  color-scheme: dark;
+}
+
+/* On dark, a card's edge does the work the shadow did. */
+[data-theme='dark'] .shadow-card,
+[data-theme='dark'] .shadow-bar {
+  border: 1px solid var(--ink-200);
+}
+
+html,
+#root {
+  /* dvh, not vh. iOS Safari's collapsing toolbar makes 100vh TALLER than the
+     visible viewport, which pushes the sticky pay button under the fold. */
+  min-height: 100dvh;
+}
+
+body {
+  min-height: 100dvh;
+  background: var(--page);
+  color: var(--ink-700);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+
+  /*
+   * SYSTEM STACK, DELIBERATELY. See DESIGN.md §3.
+   *
+   * The redesign audit says to replace system fonts with something that has
+   * character, and it is right that they are anonymous. This declines for one
+   * reason: PRD §16.1 budgets under two seconds from scan to stall list on 4G,
+   * and a webfont is a render-blocking round trip on the slowest screen in the
+   * product. Hierarchy is carried by size, weight and tracking instead.
+   */
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  font-synthesis-weight: none;
+
+  overscroll-behavior-y: none;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+/**
+ * ============================================================================
+ * LAYOUT: TWO WIDTHS, NOT ONE
+ * ============================================================================
+ *
+ * The first attempt at fixing "a single card stretched across 2000px" was a
+ * fixed 30rem phone column. That solved the stretching and created a worse
+ * problem: a narrow strip of app marooned in an ocean of empty page. A phone
+ * simulator is not a desktop layout, it is an apology for not having one.
+ *
+ * So there are two widths, and screens choose between them by what they ARE:
+ *
+ *   --width-app   the frame. Grows with the viewport. Browse screens fill it
+ *                 and lay their content out in a GRID, so a wide window shows
+ *                 six stalls at once instead of six stalls and a void.
+ *
+ *   --width-read  a readable measure, ~34rem. Linear screens — checkout, pay,
+ *                 verify, tracking — cap their content here and centre it
+ *                 inside the frame. These are one-thing-at-a-time screens and
+ *                 widening them would only make the eye travel further between
+ *                 a label and its value.
+ *
+ * The phone case is unchanged by all of it: below 40rem both widths are 100%
+ * and every screen is the single column it always was.
+ */
+:root {
+  --width-app: 100%;
+  --width-read: 34rem;
+}
+
+@media (min-width: 40rem) {
+  :root {
+    --width-app: 40rem;
+  }
+}
+
+/**
+ * 70rem was too narrow, and the browse screens are where it showed.
+ *
+ * It is the right cap for a SEQUENCE — checkout, payment, tracking — which is
+ * what `--width-read` is for. It was wrong for the stall list: a court with
+ * three stalls rendered a column of cards down the left of a 2000px window with
+ * half the screen empty beside it, which reads as a phone layout somebody
+ * forgot to finish rather than a deliberate measure.
+ *
+ * 90rem at the top end is close to what every delivery site uses, and it is the
+ * difference between four cards across and two.
+ */
+@media (min-width: 64rem) {
+  :root {
+    --width-app: 70rem;
+  }
+}
+
+@media (min-width: 90rem) {
+  :root {
+    --width-app: 88rem;
+  }
+}
+
+/**
+ * The frame.
+ *
+ * A FLEX COLUMN whose screens are `flex-1`, rather than the `min-height: 100%`
+ * they used before. A percentage min-height needs a parent with a definite
+ * height to resolve against; the moment the shell's height became `min-height`,
+ * `min-h-full` on a screen would have collapsed to nothing and taken the sticky
+ * footer with it.
+ */
+/*
+ * THE FRAME IS THE WINDOW. THE CAP MOVED INSIDE IT.
+ *
+ * `max-width` used to live here, which meant the app bar — a white band with a
+ * bottom border — stopped 50px short of each edge on a 1512px screen and left a
+ * strip of page colour beside it. A header that does not reach the edge of the
+ * window does not read as "centred content", it reads as a broken stylesheet,
+ * and the AppBar's own comment had been claiming "the BAR spans the frame" for
+ * exactly that reason. It did; the frame was the thing that stopped short.
+ *
+ * So the frame is now the viewport, and every FULL-BLEED surface — the app bar,
+ * the sticky footer — spans it edge to edge, while their CONTENTS carry the cap
+ * via `.frame-inner` or `.measure`. That is the shape every delivery site uses:
+ * bands touch the glass, text does not.
+ */
+.app-frame {
+  width: 100%;
+  min-height: 100dvh;
+
+  /*
+   * ==========================================================================
+   * THE LEFT AND RIGHT SAFE AREAS, WHICH WERE MISSING
+   * ==========================================================================
+   *
+   * `index.html` sets `viewport-fit=cover`. That is deliberate — it is what
+   * lets the app bar's colour run up under the status bar and the pay island
+   * sit against the home indicator — and it has a price: the layout viewport
+   * now extends UNDER the display cutout and under the rounded corners of the
+   * physical screen.
+   *
+   * `.safe-top` and `.safe-bottom` existed and were applied. Nothing handled
+   * LEFT and RIGHT, where the insets are zero in portrait on most phones and
+   * decidedly not zero:
+   *
+   *   - in landscape on any notched iPhone (44pt on one side)
+   *   - on devices with curved edges, portrait included
+   *   - on anything with a rounded display corner, which is all of them
+   *
+   * The symptom is an element at the left edge of a row losing a slice of
+   * itself to the corner — reported as "the circle is cut off on the left",
+   * which is exactly what a 44px circle sitting 20px from a clipped edge does.
+   * It cannot be reproduced in a desktop browser, because there the insets
+   * are 0 and everything looks correct.
+   *
+   * HERE, NOT ON EACH SCREEN. Every screen is inside this frame, so one
+   * declaration covers all of them and no future screen can forget. `env()`
+   * resolves to 0 wherever there is no cutout, so this changes nothing on a
+   * desktop, a tablet or a phone held upright.
+   */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  background: var(--page);
+  display: flex;
+  flex-direction: column;
+}
+
+/**
+ * The cap, for the content of a browse screen.
+ *
+ * Same value the frame used to carry, applied one level in. A stall grid that
+ * runs the whole width of a 2560px monitor gives four cards 620px wide each —
+ * the "single card stretched across the window" problem the two widths exist to
+ * solve, just with more cards in it.
+ */
+.frame-inner {
+  width: 100%;
+  max-width: var(--width-app);
+  margin-inline: auto;
+}
+
+/** The readable measure, for screens that are a sequence rather than a set. */
+.measure {
+  width: 100%;
+  max-width: var(--width-read);
+  margin-inline: auto;
+}
+
+/**
+ * ============================================================================
+ * THE DISPLAY SERIF
+ * ============================================================================
+ *
+ * A stack, not a download. The redesign reference gets almost all of its
+ * character from a serif display face, and the temptation is to load Playfair
+ * or Prata. This does not, for the reason DESIGN.md §3 already gives: PRD §16.1
+ * budgets under two seconds from scan to menu on 4G, and a webfont is a
+ * render-blocking round trip on the first screen a customer ever sees — in a
+ * basement food court, on the worst connection they will have all day.
+ *
+ * The effect that reads as "editorial" is a SERIF NEXT TO A SANS, at a large
+ * size, with tight tracking. Which specific serif matters far less than people
+ * think once it is set at 32px and the line under it is 13px sans.
+ *
+ * `ui-serif` resolves to New York on Apple platforms and a decent default
+ * elsewhere; Georgia is the fallback that is genuinely everywhere and was
+ * designed for screens.
+ */
+.display {
+  font-family: ui-serif, Georgia, 'Times New Roman', serif;
+  /* Serifs at display size are set too loose by default — the tracking is
+     drawn for body copy at 16px. */
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  font-weight: 700;
+}
+
+/**
+ * Small caps by hand, for the category pills and section eyebrows.
+ *
+ * `font-variant: small-caps` would be the correct tool and is unreliable across
+ * the fallbacks above. Uppercase plus generous tracking is the same effect and
+ * renders identically everywhere. The tracking is not optional: uppercase set
+ * at normal tracking is genuinely harder to read, because the word shapes that
+ * carry lowercase recognition are gone.
+ */
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 700;
+}
+
+/**
+ * Identifiers a person transcribes or reads aloud.
+ *
+ * The order reference on the orphaned-payment screen, which somebody shows to
+ * staff at a counter. A proportional font makes 0/O and 1/l/I ambiguous, and
+ * this is the one string on the customer app that a human has to relay
+ * accurately to another human.
+ */
+.ident {
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  font-variant-ligatures: none;
+  letter-spacing: 0.01em;
+}
+
+/* Tabular figures so prices do not jitter as digits change. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+/*
+ * There is no `.safe-x` to go with these two, on purpose: horizontal insets are
+ * handled once on `.app-frame`, which every screen is inside. A per-element
+ * utility would be one more thing to remember on each new row, and the failure
+ * mode is invisible on every machine a developer owns.
+ */
+.safe-top {
+  padding-top: max(0.25rem, env(safe-area-inset-top));
+}
+
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Orphaned words on a narrow phone column are the commonest typographic tell. */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+/**
+ * One focus ring, everywhere, and it is never removed.
+ *
+ * The audit found seven focus styles in the whole app. A visible focus
+ * indicator is an accessibility requirement rather than a preference, and
+ * `:focus-visible` means a mouse user never sees it.
+ */
+:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/**
+ * HOVER AND PRESS, IN ONE PLACE, THEME-AGNOSTIC.
+ *
+ * The audit's count across this app was 0 hover states and 21 active states.
+ * Everything felt dead under a cursor and the desktop browser the user was
+ * demoing in is exactly where that shows.
+ *
+ * Done as a filter rather than as `hover:bg-brand-600` utilities for one
+ * reason: the correct hover colour is theme-dependent and opposite in the two
+ * themes. On light, a button darkens on press. On dark, `brand-fill` is already
+ * the bright end of the ramp and darkening it *reduces* its contrast with the
+ * near-black label sitting on it. A relative brightness shift is right in both
+ * directions, and is one rule instead of ninety.
+ *
+ * The hover half is behind `(hover: hover)`. Without that guard a phone tap
+ * leaves the element stuck in its hover state until you tap elsewhere — the
+ * commonest mobile CSS bug there is, and this is a phone app first.
+ */
+/**
+ * BRIGHTNESS AND SCALE ONLY. THE FILM IS NOT WELCOME HERE.
+ *
+ * The film WAS in this rule, on the theory that one rule means nothing gets
+ * forgotten. It was the wrong rule, because `.pressable` sits on two different
+ * kinds of thing:
+ *
+ *   1. controls that own a surface — a button with a background and a radius
+ *   2. invisible layout wrappers whose only job is to make something clickable
+ *
+ * Category chips are (2): an 84px SQUARE button containing a round photo and a
+ * caption. Painting a background on it drew a rectangle behind the circle, on
+ * every hover, in the most-looked-at row of the app.
+ *
+ * `filter` and `transform` are safe on both kinds because they act on what is
+ * already painted — a wrapper with nothing in its own box shows nothing. A
+ * background is the one property that INVENTS a shape, so it has to be asked
+ * for by an element that has one. That is `.glass-hover`, below.
+ */
+.pressable {
+  transition: filter 120ms ease, transform 120ms ease, background-color 120ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pressable:hover:not(:disabled) {
+    filter: brightness(1.06);
+  }
+}
+
+.pressable:active:not(:disabled) {
+  filter: brightness(0.94);
+  transform: scale(0.985);
+}
+
+.pressable:disabled {
+  filter: none;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pressable:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/**
+ * A toast arriving.
+ *
+ * Not decoration. A message that simply EXISTS on the next frame reads as a
+ * rendering glitch — the eye registers that something changed without
+ * registering what, and the customer looks at it after it has already been
+ * read to them. A short slide from above says "this just arrived", which is the
+ * entire content of the animation.
+ *
+ * 180ms and an ease-out: fast enough not to delay a "your food is ready" that
+ * somebody is waiting on, slow enough for peripheral vision to catch the
+ * movement and pull the eye up.
+ */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.75rem) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.toast-in {
+  animation: toast-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-in {
+    animation: none;
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--ink-100);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.45), transparent);
+  animation: shimmer 1.4s infinite;
+}
+
+[data-theme='dark'] .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/**
+ * ============================================================================
+ * GLASS — the hover and press treatment, in place of a red wash
+ * ============================================================================
+ *
+ * WHY NOT RED
+ *
+ * A tinted hover spends a semantic colour on a non-semantic event. Red in this
+ * app means one thing — the brand, and by extension the primary action — so a
+ * grid of dishes where every ADD button flushed red as the cursor swept past
+ * was announcing "important, important, important" at a pointer that was just
+ * on its way somewhere. Hover means "you are pointing at this". It should be
+ * legible and it should be silent.
+ *
+ * WHAT "GLASS" ACTUALLY BUYS
+ *
+ * Being honest about this: `backdrop-filter` blurs what is BEHIND the element,
+ * so it only reads as glass where something is behind it — the buttons over
+ * stall photographs, the controls on the red app bar, the offer carousel, the
+ * sheet headers. Over a flat white card there is nothing to blur and the effect
+ * degrades to the translucent wash alone. That is still the right answer,
+ * because the wash is the part that replaces the red; the blur is the part that
+ * makes it look deliberate where it can.
+ *
+ * `saturate` alongside the blur is what stops the frost going grey and dead
+ * over a colourful photograph.
+ *
+ * THREE STATES, NOT TWO
+ *
+ * Idle -> hover -> press must be three distinguishable steps. If press looks
+ * like hover, a tap on a slow connection gives no evidence it registered, and
+ * the customer taps again. `--glass-press` is roughly double `--glass-fill`
+ * for exactly that reason.
+ *
+ * THE `(hover: hover)` GUARD IS NOT OPTIONAL
+ *
+ * Without it a phone tap leaves the element stuck in its hover state until you
+ * tap somewhere else — the commonest mobile CSS bug there is. `.pressable`
+ * above already learned this; the same guard applies here.
+ */
+/**
+ * WHY `background-image` AND NOT `background-color`
+ *
+ * Half these controls already own an opaque background — the ADD button is
+ * `bg-surface`, the court card is `bg-surface`. Setting `background-color` on
+ * hover REPLACES that, so a white button would hover to "6% ink over whatever
+ * happens to be behind the card" — a different colour the moment anything
+ * changes behind it, and in a sheet or a modal, a hole. A gradient of one
+ * colour is a background-IMAGE, and images composite ON TOP of the colour
+ * instead of replacing it. The element keeps its own surface and gains a film.
+ */
+.glass-hover {
+  transition: background-image 140ms ease, border-color 140ms ease,
+    -webkit-backdrop-filter 140ms ease, backdrop-filter 140ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .glass-hover:hover:not(:disabled) {
+  }
+}
+
+.glass-hover:active:not(:disabled) {
+}
+
+.glass-hover:disabled {
+}
+
+/**
+ * The same material, but PERSISTENT — a thing that stays chosen.
+ *
+ * Separate from `.glass-hover` because selection and hover are different
+ * claims and must not look identical: if the selected filter looks exactly like
+ * whichever filter your cursor happens to be over, the rail has no state at
+ * all. So this is heavier, and it carries an EDGE — a hairline the hover
+ * treatment never draws. Weight and outline, rather than hue.
+ *
+ * It is applied unconditionally, not behind `(hover: hover)`, because it is not
+ * a pointer state. A phone must show it too.
+ */
+.glass-on {
+  background-image: linear-gradient(var(--glass-press), var(--glass-press));
+  border-color: var(--glass-edge);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  backdrop-filter: blur(14px) saturate(1.5);
+}
+
+/**
+ * A frosted RING, for things whose content is a photograph.
+ *
+ * The category rail used `ring-brand-500` to mark the chosen cuisine, which is
+ * a red circle drawn around a picture of food — the one place a red ring is
+ * genuinely ambiguous, because half the pictures have red in them. A light ring
+ * with a dark halo (or the inverse, per theme) separates from any photograph
+ * without competing with it, and it is the `--glass-edge` value doing the work
+ * so the whole treatment stays one vocabulary.
+ *
+ * Two shadows rather than a `ring`: the inner one sits ON the image edge and
+ * the outer one lifts it off the page, which is what makes a translucent
+ * outline survive a busy background.
+ */
+.glass-ring {
+  box-shadow:
+    0 0 0 2px var(--glass-edge),
+    0 0 0 4px var(--glass-fill),
+    0 2px 10px var(--glass-press);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-hover {
+    transition: none;
+  }
+}
+
+/**
+ * ============================================================================
+ * THE FLOATING ACTION ISLAND
+ * ============================================================================
+ *
+ * WHAT IT REPLACES
+ *
+ * First a full-bleed white bar pinned to the bottom with a shadow above it —
+ * a slab across the bottom sixth of a phone, carrying one red button that was
+ * already the loudest object in the app.
+ *
+ * Then a frosted PLATE with the button sitting inside it. That fixed the slab
+ * and introduced a worse thing: six pixels of pale glass all the way round a
+ * red pill reads as a border somebody forgot to remove, not as a material.
+ *
+ * So there is no plate. The button IS the glass.
+ *
+ * ============================================================================
+ * HOW TRANSPARENT A BUTTON CAN BE, MEASURED RATHER THAN GUESSED
+ * ============================================================================
+ *
+ * The label has to clear 4.5:1, and on a translucent fill the background is
+ * not a colour — it is whatever is scrolling behind, which changes as you
+ * scroll. So the alpha has to hold against the WORST case, which in the light
+ * theme is a white card passing underneath:
+ *
+ *   alpha   composite   white on it
+ *   0.88    #d5524b     4.09:1   fails
+ *   0.92    #d34a42     4.35:1   fails
+ *   0.94    #d2463e     4.48:1   fails, and by less than a rounding error
+ *   0.95    #d1443c     4.56:1   ok
+ *   1.00    #cf3a32     4.88:1   ok, and is the value the palette was built on
+ *
+ * 0.95 it is. The dark theme is comfortable at any of these — its label is
+ * near-black on a bright fill, and the worst backdrop there is the dark page,
+ * which pulls the composite in the safe direction.
+ *
+ * WHICH MEANS THE GLASS IS NOT THE TRANSPARENCY
+ *
+ * Five per cent see-through is not what makes this look like glass, and it was
+ * never going to be. The effect is four other things, all of which are free:
+ *
+ *   the BLUR       what little comes through is defocused, so the edges pick
+ *                  up colour from the food behind rather than sitting flat
+ *   the RIM        a bright hairline along the top edge, dimming to nothing at
+ *                  the bottom — the single strongest cue that a surface has
+ *                  thickness
+ *   the SHEEN      a soft vertical gradient over the fill, lighter at the top
+ *   the GLOW       a shadow tinted with the brand colour instead of black, so
+ *                  the button appears to be lit rather than cut out
+ *
+ * Apple's own controls are mostly opaque for exactly this reason. Legibility
+ * is not the thing you spend to buy the appearance of glass.
+ */
+/*
+ * THE FILL IS A VARIABLE, so one material serves more than one colour.
+ *
+ * The pay button is `ink-900` rather than brand — deliberately, because "hand
+ * over money" should not look like every other red button in the app. It still
+ * wants the same material: same rim, same sheen, same blur, a glow in its own
+ * colour. Hard-coding `--brand-fill` here would have meant a second copy of
+ * this rule differing in one line.
+ */
+.glass-action {
+  position: relative;
+  isolation: isolate;
+  background-color: color-mix(in srgb, var(--action-fill, var(--brand-fill)) 95%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  backdrop-filter: blur(16px) saturate(1.5);
+  box-shadow:
+    /* The rim. Inset, so it sits ON the edge rather than outside it. */
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    inset 0 -1px 0 rgb(0 0 0 / 0.10),
+    /* The glow, in the brand colour rather than black. */
+    0 8px 28px var(--action-glow, var(--elev-action-glow)),
+    0 2px 8px rgb(18 21 26 / 0.14);
+}
+
+/*
+ * The sheen, as a pseudo-element rather than a `background-image`.
+ *
+ * A gradient in `background-image` would sit UNDER the backdrop-filter's
+ * result in some engines and over it in others. A stacking child is
+ * unambiguous everywhere, and `pointer-events: none` keeps it out of the way
+ * of the tap it is decorating.
+ */
+.glass-action::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(rgb(255 255 255 / 0.14), rgb(255 255 255 / 0) 55%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/**
+ * The same material, in the app's darkest ink.
+ *
+ * `--action-fill` is all that changes. The glow goes with it, because a
+ * brand-red halo under a near-black button reads as a rendering artefact rather
+ * than as light.
+ */
+.glass-action-ink {
+  --action-fill: var(--ink-900);
+  --action-glow: rgb(18 21 26 / 0.28);
+}
+
+/*
+ * The gutter around the island must not eat taps.
+ *
+ * The dock spans the screen so the island can be centred in it, and it sits
+ * above the page at `z-20`. Without this, the transparent strip either side
+ * would swallow every tap aimed at a dish behind it — an invisible dead zone
+ * across the bottom of the menu, which is the hardest kind of bug to be told
+ * about.
+ */
+.action-dock {
+  pointer-events: none;
+}
+
+.action-dock > * {
+  pointer-events: auto;
+}

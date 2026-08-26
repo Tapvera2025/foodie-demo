@@ -30,8 +30,33 @@ export const AUDITED_ACTIONS = [
   'vendor.activated',
   'vendor.settlement_mode_changed',
   'vendor.suspended',
+  /*
+   * Deactivation is its own action, not a flavour of suspension.
+   *
+   * They look similar and are not: suspension is reversible and covers a
+   * temporary problem, INACTIVE is terminal and means the stall has left the
+   * court. `canTransitionVendor` has no INACTIVE -> ACTIVE edge precisely
+   * because coming back requires re-onboarding — stale bank details are how
+   * money reaches the wrong account.
+   *
+   * Logging both under `vendor.suspended` would make the audit log unable to
+   * answer "did this stall leave, or is it coming back", which is the question
+   * somebody reading it six months later is actually asking.
+   */
+  'vendor.deactivated',
   'user.invited',
   'user.deactivated',
+  /**
+   * A new password issued for an existing login.
+   *
+   * Its own action rather than `user.invited`, because the two answer different
+   * questions and the difference matters in exactly the situation an audit log
+   * gets read. "This account was created on the 3rd" and "this account's
+   * password was changed on the 19th" are the same row under one name, and the
+   * second is the one somebody is looking for after a stall reports orders it
+   * did not accept.
+   */
+  'user.password_reset',
   'role.assigned',
   'role.revoked',
   'device.paired',
@@ -42,6 +67,9 @@ export const AUDITED_ACTIONS = [
   'court.created',
   'court.updated',
   'court.suspended',
+  /** Un-suspending. Distinct from `court.created` — the venue already existed. */
+  'court.activated',
+  'court.deactivated',
   'config.changed',
   'reconciliation.resolved',
   'menu.imported',
@@ -96,7 +124,14 @@ export function buildAuditEntry(input: AuditInput): AuditEntry {
   };
 }
 
-/** Port. Implemented over `audit_log`, which is INSERT-only by grant. */
+/**
+ * Port. Implemented by `audit.repository.ts` over `audit_log`, which is
+ * append-only by TRIGGER — grants were the original claim and errata E-002 is
+ * why that wording changed.
+ *
+ * The transaction argument is optional and load-bearing where it is used: an
+ * audit row describing a change must commit with it or not at all.
+ */
 export interface AuditWriter {
-  write(entry: AuditEntry): Promise<void>;
+  write(entry: AuditEntry, trx?: unknown): Promise<void>;
 }

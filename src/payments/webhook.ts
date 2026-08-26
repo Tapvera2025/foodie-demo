@@ -29,6 +29,14 @@ export type WebhookAction =
       readonly providerEventId: string;
       readonly reason: ReconcileReason;
     }
+  /**
+   * Real money news that moves the payment but not the order — a capture
+   * arriving after the authorisation already confirmed, or an authorisation
+   * under ON_CAPTURE where the money has not moved yet.
+   *
+   * Distinct from DROP_DUPLICATE, which discards. This one is recorded.
+   */
+  | { readonly kind: 'PAYMENT_ONLY'; readonly providerEventId: string }
   /** Apply a state change, then enqueue any follow-up separately. */
   | {
       readonly kind: 'APPLY';
@@ -40,12 +48,36 @@ export type WebhookAction =
 export type ReconcileReason =
   'UNRECOGNISED_EVENT' | 'NO_ORDER_REFERENCE' | 'AMOUNT_MISMATCH' | 'ORDER_NOT_FOUND';
 
+export type SplitTiming = 'ON_CAPTURE' | 'ON_ACKNOWLEDGED';
+
+/**
+ * Which payment state is sufficient to confirm an order.
+ *
+ * PRD §8.2 states the binding rule as "PAYMENT.AUTHORIZED or PAYMENT.CAPTURED,
+ * whichever the split timing requires" — and insists the dependency be explicit
+ * rather than implied by the ordering of code. This function is that
+ * explicitness. It is one line and it exists so that the reason cannot be lost
+ * in a chain of ternaries.
+ *
+ *   ON_ACKNOWLEDGED  block at checkout, take when the kitchen accepts.
+ *                    Authorisation confirms; capture comes later.
+ *   ON_CAPTURE       take at checkout. Authorisation alone confirms nothing,
+ *                    because the money has not moved and might not.
+ */
+export function confirmationRequires(timing: SplitTiming): 'AUTHORIZED' | 'CAPTURED' {
+  return timing === 'ON_ACKNOWLEDGED' ? 'AUTHORIZED' : 'CAPTURED';
+}
+
 export interface WebhookContext {
   /** True if this provider event id has already been recorded. */
   readonly alreadyProcessed: boolean;
   /** Amount the platform expects, if the order is known. */
   readonly expectedAmountPaise?: number;
   readonly orderExists?: boolean;
+  /** Config PAYMENTS_SPLIT_TIMING. Decides which payment state confirms. */
+  readonly splitTiming: SplitTiming;
+  /** True once the order has already reached PAYMENT_CONFIRMED. */
+  readonly orderAlreadyConfirmed?: boolean;
 }
 
 export function decideWebhookAction(
@@ -93,9 +125,13 @@ export function decideWebhookAction(
     };
   }
 
-  // A success for the wrong amount is not a success.
+  const isMoneyEvent = event.kind === 'PAYMENT_AUTHORIZED' || event.kind === 'PAYMENT_CAPTURED';
+
+  // Money moved for the wrong amount is not money moved. Applies to both
+  // authorisation and capture: a block for the wrong figure is as wrong as a
+  // charge for the wrong figure, and it is cheaper to catch before the food.
   if (
-    event.kind === 'PAYMENT_SUCCEEDED' &&
+    isMoneyEvent &&
     ctx.expectedAmountPaise !== undefined &&
     event.amountPaise !== undefined &&
     event.amountPaise !== ctx.expectedAmountPaise
@@ -107,11 +143,35 @@ export function decideWebhookAction(
     };
   }
 
-  const command: OrderCommand =
-    event.kind === 'PAYMENT_SUCCEEDED'
-      ? 'confirmPayment'
-      : event.kind === 'PAYMENT_FAILED'
-        ? 'failPayment'
+  // Does this event carry the order across the confirmation line?
+  //
+  // Under ON_ACKNOWLEDGED the authorisation does it and the later capture is
+  // bookkeeping on an order that is already cooking. Under ON_CAPTURE the
+  // authorisation is real but insufficient — the money has not moved and the
+  // provider may yet fail to take it — so the order waits.
+  const sufficient = confirmationRequires(ctx.splitTiming);
+  const confirms =
+    (sufficient === 'AUTHORIZED' && isMoneyEvent) || event.kind === 'PAYMENT_CAPTURED';
+
+  // A capture arriving after the order was confirmed by its authorisation is
+  // expected traffic under ON_ACKNOWLEDGED, not a duplicate and not an error.
+  // It updates the payment and leaves the order where it is.
+  if (confirms && ctx.orderAlreadyConfirmed === true) {
+    return { kind: 'PAYMENT_ONLY', providerEventId: event.providerEventId };
+  }
+
+  if (isMoneyEvent && !confirms) {
+    // An authorisation under ON_CAPTURE. Real, recorded, and not yet a reason
+    // to cook anything.
+    return { kind: 'PAYMENT_ONLY', providerEventId: event.providerEventId };
+  }
+
+  const command: OrderCommand = confirms
+    ? 'confirmPayment'
+    : event.kind === 'PAYMENT_FAILED'
+      ? 'failPayment'
+      : event.kind === 'PAYMENT_EXPIRED'
+        ? 'expirePayment'
         : event.kind === 'REFUND_SUCCEEDED'
           ? 'confirmRefund'
           : 'failRefund';
@@ -122,7 +182,7 @@ export function decideWebhookAction(
     command,
     // 5. Only a confirmed payment leads to dispatch, and it is enqueued after
     //    commit rather than inside the transaction.
-    enqueueDispatch: event.kind === 'PAYMENT_SUCCEEDED',
+    enqueueDispatch: confirms,
   };
 }
 

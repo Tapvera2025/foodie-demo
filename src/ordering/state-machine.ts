@@ -24,8 +24,9 @@ export const ORDER_STATUSES = [
   'ACKNOWLEDGED',
   'PREPARING',
   'READY',
-  'COMPLETED',
+  'COLLECTED',
   'PAYMENT_FAILED',
+  'PAYMENT_EXPIRED',
   'DISPATCH_FAILED',
   'REJECTED',
   'CANCELLED',
@@ -45,22 +46,40 @@ export type OrderStatus = (typeof ORDER_STATUSES)[number];
  */
 export const ALLOWED_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
   CREATED: ['PAYMENT_PENDING', 'CANCELLED'],
-  PAYMENT_PENDING: ['PAYMENT_CONFIRMED', 'PAYMENT_FAILED', 'RECONCILIATION_REQUIRED'],
-  PAYMENT_CONFIRMED: ['DISPATCHED', 'RECONCILIATION_REQUIRED'],
-  DISPATCHED: ['ACKNOWLEDGED', 'DISPATCH_FAILED', 'REJECTED'],
+
+  // PAYMENT_EXPIRED is not a flavour of PAYMENT_FAILED. Failed means the
+  // instrument declined and there is something to tell the customer; expired
+  // means no outcome arrived in the window, so nothing was declined and any
+  // block is released. Reported as one number they hide how many customers
+  // simply walked away mid-payment. PRD §7.2.
+  PAYMENT_PENDING: [
+    'PAYMENT_CONFIRMED',
+    'PAYMENT_FAILED',
+    'PAYMENT_EXPIRED',
+    'CANCELLED',
+    'RECONCILIATION_REQUIRED',
+  ],
+
+  PAYMENT_CONFIRMED: ['DISPATCHED', 'DISPATCH_FAILED', 'RECONCILIATION_REQUIRED'],
+  DISPATCHED: ['ACKNOWLEDGED', 'DISPATCH_FAILED', 'REJECTED', 'CANCELLED'],
   ACKNOWLEDGED: ['PREPARING', 'READY', 'REJECTED'],
   PREPARING: ['READY', 'REJECTED'],
-  READY: ['COMPLETED'],
-  DISPATCH_FAILED: ['DISPATCHED', 'CANCELLED', 'REJECTED'],
+  READY: ['COLLECTED'],
+
+  // Paid, and the stall never received it. Retry, then refund — never left
+  // sitting, because the customer has been charged. PRD §9 case D.
+  DISPATCH_FAILED: ['DISPATCHED', 'CANCELLED', 'REJECTED', 'REFUND_PENDING'],
+
   REJECTED: ['REFUND_PENDING'],
   CANCELLED: ['REFUND_PENDING'],
   REFUND_PENDING: ['REFUNDED', 'REFUND_FAILED'],
   REFUND_FAILED: ['REFUND_PENDING', 'RECONCILIATION_REQUIRED'],
-  RECONCILIATION_REQUIRED: ['PAYMENT_CONFIRMED', 'REFUND_PENDING', 'CANCELLED', 'COMPLETED'],
+  RECONCILIATION_REQUIRED: ['PAYMENT_CONFIRMED', 'REFUND_PENDING', 'CANCELLED', 'COLLECTED'],
 
   // Terminal.
-  COMPLETED: [],
+  COLLECTED: [],
   PAYMENT_FAILED: [],
+  PAYMENT_EXPIRED: [],
   REFUNDED: [],
 };
 
@@ -92,7 +111,12 @@ export function isRejectable(status: OrderStatus): boolean {
 
 /** Money has been committed — a customer has been charged. */
 export function isPaid(status: OrderStatus): boolean {
-  return status !== 'CREATED' && status !== 'PAYMENT_PENDING' && status !== 'PAYMENT_FAILED';
+  return (
+    status !== 'CREATED' &&
+    status !== 'PAYMENT_PENDING' &&
+    status !== 'PAYMENT_FAILED' &&
+    status !== 'PAYMENT_EXPIRED'
+  );
 }
 
 export const ORDER_COMMANDS = [
@@ -104,7 +128,8 @@ export const ORDER_COMMANDS = [
   'acknowledge',
   'markPreparing',
   'markReady',
-  'markCompleted',
+  'markCollected',
+  'expirePayment',
   'reject',
   'customerCancel',
   'forceCancel',
@@ -135,6 +160,11 @@ export const COMMAND_SPECS: Readonly<Record<OrderCommand, CommandSpec>> = {
   beginPayment: { to: 'PAYMENT_PENDING', requiresReason: false },
   confirmPayment: { to: 'PAYMENT_CONFIRMED', requiresReason: false },
   failPayment: { to: 'PAYMENT_FAILED', requiresReason: false },
+
+  // Emitted by the expiry sweeper, never by a customer closing a tab. Distinct
+  // from failPayment so the two are countable separately. PRD PAY-REC-06.
+  expirePayment: { to: 'PAYMENT_EXPIRED', requiresReason: false },
+
   dispatch: { to: 'DISPATCHED', requiresReason: false },
 
   // A machine event, not a human approval. Only a paired device emits it.
@@ -142,7 +172,10 @@ export const COMMAND_SPECS: Readonly<Record<OrderCommand, CommandSpec>> = {
 
   markPreparing: { to: 'PREPARING', permission: 'order.prepare', requiresReason: false },
   markReady: { to: 'READY', permission: 'order.ready', requiresReason: false },
-  markCompleted: { to: 'COMPLETED', permission: 'order.complete', requiresReason: false },
+
+  // Handed over, not merely cooked. The gap between READY and COLLECTED is a
+  // real queue at the counter and the two must stay countable apart. PRD §7.1.
+  markCollected: { to: 'COLLECTED', permission: 'order.collect', requiresReason: false },
 
   // Reason is mandatory: it is stored, reportable, and drives the vendor
   // rejection-rate metric. PRD KDS-REJ-02.

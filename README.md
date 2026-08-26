@@ -6,17 +6,11 @@ A customer sits at a food-court table, scans the QR code on it, browses every
 stall in the court, orders from one, pays by UPI, and is told when to collect.
 No app install, no login, no queue.
 
-**Status: Weeks 1–4 complete; weeks 5–7 partially built against the payment stub.** Pilot release P0 targets one food court.
-
-| Week | Scope                                                                | Gate                                                                    | State                                |
-| ---- | -------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------ |
-| 1    | Foundations — money, config, errors, correlation, logging, migration | Migration runs clean; app refuses to boot without a tax determination   | Done                                 |
-| 2    | Identity, RBAC, tenancy, QR tokens, audit                            | A deliberate cross-tenant read returns 404 and is logged                | Done                                 |
-| 3    | Catalog, cart, session                                               | A cart cannot hold two vendors, even via direct API calls               | Done                                 |
-| 4    | Pricing — fee engine, tax model, rounding                            | The TDD §4.2 worked example reproduces to the paisa in both tax columns | Done                                 |
-| 5    | Payments — provider interface, stub, webhook pipeline, state machine | Duplicate and delayed webhooks produce exactly one order                | Logic done; adapter blocked on §31.1 |
-| 6    | Refunds — credit/refund mutual exclusion, retry schedule             | A customer can never both spend credit and receive the refund           | Logic done                           |
-| 7    | Dispatch — escalation ladder                                         | Every scenario in TDD §17.1 passes                                      | Ladder done; needs a DB and worker   |
+**Status: the customer journey runs end to end** — scan, browse, verify,
+order, pay, cook, collect. Against a payment stub and with no SMS delivery;
+both are external decisions, not unwritten code. See [RUNBOOK.md](./RUNBOOK.md)
+to run it and [docs/prd.md](./docs/prd.md) §18 for exactly what is and is not
+built.
 
 ---
 
@@ -24,9 +18,17 @@ No app install, no login, no queue.
 
 ```bash
 npm install
-npm run verify:db     # finds a Postgres, migrates from empty, proves the constraints
+npm run setup         # migrate + seed a court, three stalls, menus, logins
+npm run dev:all       # api + worker + pwa + kds in one terminal, Ctrl-C stops all
+```
+
+Then **http://localhost:5173** as a customer, **http://localhost:5174** as the
+kitchen. The full walkthrough — including where to find the OTP, since no SMS
+is sent — is in **[RUNBOOK.md](./RUNBOOK.md)**.
+
+```bash
+npm run verify:db     # migrates from empty and proves every constraint
 npm test              # unit + property + integration
-npm run dev           # API on :3000
 ```
 
 ```bash
@@ -43,22 +45,71 @@ fighting over port 5432, where the Homebrew one binds `127.0.0.1` and wins
 while the container binds `*` and loses, so `docker ps` looks healthy and
 nothing can connect.
 
+The escape hatch is `POSTGRES_PORT` in `.env` — compose reads the same file, so
+setting it to 5433 moves the container out of the way and updates nothing else.
+`.env` ships pointing there, because this checkout has a Homebrew Postgres on
+5432. See [RUNBOOK.md](./RUNBOOK.md) for both paths.
+
+### Walking the whole journey locally
+
+`npm run dev:all` starts four processes. The **worker is not optional** —
+without it a paid order stays in `PAYMENT_CONFIRMED` and never reaches a
+kitchen board, nothing watches for a stall that has gone quiet, and nobody is
+told their food is ready.
+
+Full detail in [RUNBOOK.md](./RUNBOOK.md). The short version, as a customer at
+**http://localhost:5173**:
+
+1. Pick a court on the dev entry screen — it stands in for scanning the poster.
+2. Choose a stall, open the menu, tap **ADD**.
+3. You are asked for a mobile number. **No SMS is sent** — the code is printed
+   in the API terminal as `otp_console_delivery`. Real delivery needs DLT
+   registration, which is still outstanding and is the only thing standing
+   between this and a real order.
+4. The item is still in your basket. That is deliberate and it is the property
+   most likely to break; if it ever does not survive, that is a bug.
+5. Review, pay. There is no aggregator, so the payment screen offers
+   **Simulate a successful payment** — which asks the server to forge a
+   stub-provider webhook and run it through the real verification path. The
+   client never confirms anything; it polls until the server has heard.
+6. Watch the order move on the kitchen board.
+7. Mark it **Ready** and check the API terminal: `notification_console_delivery`
+   is the message the customer would have received.
+
+To watch the escalation ladder, accept nothing. At 15 and 45 seconds the worker
+redispatches, at 90 the stall is blocked from new orders and the board says so,
+at 180 the order fails and the customer is offered a one-tap refund. Shorten
+`DISPATCH_LADDER_STEP*_SECONDS` in `.env` if you would rather not wait.
+
+As the kitchen, open **http://localhost:5174** and sign in with a stall login
+printed by `seed:dev`. Accept → Start → Ready → Hand over.
+
+To reset and go again: `npm run reset:orders`, then `npm run seed:orders` if
+you want a pre-populated board.
+
 ### What actually runs today
 
-Being precise about this, because the table above says "weeks 1–7" and that
-could be read as a working product:
+| Works now | Not built yet |
+| --- | --- |
+| Scan → browse → OTP → basket → priced checkout → payment → kitchen → collected | Admin portal — 13 modules, PRD §13, all V1 |
+| Double-entry ledger, append-only against every role including TRUNCATE | Settlement and reconciliation reports |
+| Payment lifecycle: intent, signed webhook, authorise, capture, expiry sweep | A real aggregator adapter |
+| Dispatch worker, escalation ladder, vendor heartbeat | Vendor onboarding endpoints (pilot onboards by hand) |
+| Notification ladder with per-tier dedupe | Redis-backed queues — the sweeps are Postgres SKIP LOCKED |
+| Product / availability / inventory as three concepts, remaining computed | Server-side cart, order history |
+| Rate limiting on OTP send and verify | POS integration (deferred, PRD §19.3) |
 
-| Works now                                              | Not built yet                        |
-| ------------------------------------------------------ | ------------------------------------ |
-| `/healthz`, `/readyz`, `/metrics`                      | Any ordering endpoint                |
-| The full schema, migrated and constraint-verified      | Repositories and the order service   |
-| Pricing, cart, RBAC, state machine, escalation — as libraries with tests | Anything that writes to the database |
-| The payment **stub**                                   | A real aggregator adapter (§31.1)    |
-|                                                        | The customer PWA, KDS, consoles      |
+Three honest caveats about that left-hand column:
 
-So `npm run dev` gives you a health endpoint, not a food court. The domain
-logic is real and tested; nothing has been wired to HTTP or to persistence yet.
-That is the next block of work.
+- **The payment engine works; no aggregator is chosen.** It runs against a stub
+  that *refuses to construct in production*, because a stub there confirms
+  payments nobody made. Everything after the signature check is production code.
+- **OTP works; no code reaches a phone.** The `console` channel prints to the
+  log and refuses production; the `sms` channel throws at boot with the reason,
+  rather than silently telling every customer a code was sent.
+- **Notifications run; nothing is delivered.** Same shape. Every rung of the
+  ladder reports `SKIPPED` with a stated reason and writes a row for it, so
+  "nobody was told" is a fact in the table rather than an absence.
 
 ---
 
@@ -113,7 +164,11 @@ than none at all.
 
 | Command                           | Does                                                   |
 | --------------------------------- | ------------------------------------------------------ |
+| `npm run setup`                   | Migrate, then seed a court, stalls, menus and logins   |
+| `npm run dev:all`                 | API + worker + PWA + KDS. Ctrl-C stops all four        |
 | `npm run dev`                     | API with reload                                        |
+| `npm run dev:worker`              | Dispatch, escalation, notifications, payment expiry    |
+| `npm run reset:orders`            | Clear orders, keep court and menus                     |
 | `npm run typecheck`               | `tsc --noEmit`, strict                                 |
 | `npm run lint`                    | ESLint incl. module boundaries. Zero warnings allowed. |
 | `npm test`                        | Unit + property + integration                          |
@@ -131,22 +186,32 @@ than none at all.
 The docx set is the signed-off archive; the markdown in this repo is what you
 read day to day.
 
-| Document                         | Covers                                                                                      |
-| -------------------------------- | ------------------------------------------------------------------------------------------- |
-| PRD v5.2                         | 220 requirements, commercial and regulatory architecture, scope, economics                  |
-| Technical Design Document v1.0   | Module decomposition, pricing and tax algorithm, credit/refund exclusion, escalation ladder |
-| Interface Specifications v1.0    | Auth token lifecycle, thermal docket, menu import CSV, QR print asset                       |
-| Infrastructure & Operations v1.0 | Topology, alert thresholds, runbooks                                                        |
-| [`tech.md`](tech.md)             | Technology choices and rejected alternatives                                                |
+| Document                              | Covers                                                                 |
+| ------------------------------------- | ---------------------------------------------------------------------- |
+| [`docs/prd.md`](docs/prd.md) **v7.0**  | The source of truth. §18 is what is and is not built                    |
+| [`RUNBOOK.md`](RUNBOOK.md)             | Running it, resetting it, and what each failure means                  |
+| [`docs/errata.md`](docs/errata.md)     | Eight defects found by executing the system, and the guard added for each |
+| [`docs/decisions/`](docs/decisions/)   | Decision records. DR-0001: customer OTP at add-to-cart                  |
+| [`tech.md`](tech.md)                   | Technology choices and rejected alternatives                           |
+| `contracts/openapi.yaml`               | **Stale.** Warns in its own header; see PRD §19.4                      |
+| Technical Design Document v1 (.docx)   | **Stale on the QR model, payment states and availability**             |
+| Interface Specifications v1 (.docx)    | **Stale.** Specifies a per-table QR print asset that no longer exists  |
 
 ---
 
-## Two decisions that are still open
+## Three decisions that are still open
 
-Neither blocks weeks 1–4. Both block week 5.
+None of them is code. Two are calendar-bound, which means engineering cannot
+accelerate them by starting earlier on something else.
 
-1. **Payment aggregator.** Default assumption is Razorpay Route, pending
-   verification against the criteria in PRD §4.6.
-2. **The GST s.9(5) determination.** Owner: Finance plus an external CA. Until
-   it lands, `TAX_SECTION_9_5_APPLIES` is a guess — and the pricing and split
-   logic cannot be written correctly on a guess.
+1. **DLT registration.** India requires the sender entity, header and every
+   template to be registered before transactional SMS is delivered. Customer
+   OTP gates order placement, so **this blocks taking a single real order.**
+   Owner: founder. Start first.
+2. **Payment aggregator.** Razorpay Route is the working assumption, pending
+   the criteria in PRD §19.1. Blocks settlement, refunds and Mode A.
+3. **The GST s.9(5) determination.** Owner: Finance plus an external CA. Until
+   it lands `TAX_SECTION_9_5_APPLIES` is a guess, and getting it wrong in the
+   permissive direction loses roughly 2% of every order, silently, discovered
+   in reconciliation months later.
+# Foodie

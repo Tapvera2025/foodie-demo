@@ -12,13 +12,31 @@
 import type { Paise } from '../platform/money.js';
 import type { SettlementMode } from '../pricing/fee-engine.js';
 
+/**
+ * The payment's own lifecycle. PRD §8.
+ *
+ * AUTHORIZED and CAPTURED are separate states, and that separation is the whole
+ * mechanism rather than a detail: PAYMENTS_SPLIT_TIMING=ON_ACKNOWLEDGED means
+ * block the money at checkout, take it when the kitchen accepts, release it
+ * instantly if no stall ever does. A single SUCCESS state cannot represent the
+ * interval between those two events, and that interval is where every order
+ * that no stall accepts lives.
+ *
+ * It is also the shape of UPI single-block-multi-debit, which PRD §19.1 names
+ * as the correct long-term primitive. Collapsing the two would make the target
+ * architecture unimplementable and hide the difference between "the customer
+ * has been charged" and "the customer could be charged".
+ */
 export type PaymentStatus =
-  | 'INITIATED'
+  | 'CREATED'
   | 'PENDING'
-  | 'SUCCESS'
+  | 'AUTHORIZED'
+  | 'CAPTURED'
   | 'FAILED'
+  | 'EXPIRED'
   | 'REFUND_PENDING'
   | 'REFUNDED'
+  | 'PARTIALLY_REFUNDED'
   | 'REFUND_FAILED'
   | 'RECONCILIATION_REQUIRED';
 
@@ -61,6 +79,21 @@ export interface PaymentIntent {
   readonly checkoutPayload: Readonly<Record<string, unknown>>;
 }
 
+export interface CaptureInput {
+  readonly orderId: string;
+  readonly providerPaymentRef: string;
+  /** May be less than the authorised amount where a line was rejected. */
+  readonly amountPaise: Paise;
+  readonly correlationId: string;
+}
+
+export interface CaptureResult {
+  readonly status: 'CAPTURED' | 'FAILED' | 'EXPIRED';
+  readonly capturedPaise?: Paise;
+  readonly providerFeePaise?: Paise;
+  readonly reason?: string;
+}
+
 export interface RefundInput {
   /** Platform-generated BEFORE the provider call, so a timeout is retryable. */
   readonly refundId: string;
@@ -81,8 +114,16 @@ export interface RefundResult {
 }
 
 export type NormalisedEventKind =
-  | 'PAYMENT_SUCCEEDED'
+  /** Funds blocked, not taken. Under ON_ACKNOWLEDGED this is what confirms an order. */
+  | 'PAYMENT_AUTHORIZED'
+  /** Funds taken. Under ON_CAPTURE this is what confirms an order. */
+  | 'PAYMENT_CAPTURED'
   | 'PAYMENT_FAILED'
+  /**
+   * No outcome inside the window; any block released. Not a failure — nothing
+   * was declined, so there is nothing to explain to the customer. PAY-REC-06.
+   */
+  | 'PAYMENT_EXPIRED'
   | 'REFUND_SUCCEEDED'
   | 'REFUND_FAILED'
   | 'TRANSFER_SETTLED'
@@ -124,7 +165,25 @@ export interface PaymentProvider {
   readonly mode: SettlementMode;
 
   createIntent(input: CreateIntentInput): Promise<PaymentIntent>;
+
+  /**
+   * Ask the provider directly what happened.
+   *
+   * PRD §9 case B — the frontend reports failure and the payment actually
+   * succeeded. The client redirect and the webhook are independent channels,
+   * the client can be wrong in both directions, and only the webhook is
+   * authenticated. This is how the server stops believing either of them.
+   */
   getStatus(providerPaymentRef: string): Promise<PaymentStatus>;
+
+  /**
+   * Take money that is currently only blocked.
+   *
+   * Called when the kitchen acknowledges, under ON_ACKNOWLEDGED. Idempotent on
+   * `providerPaymentRef`: a retry after a timeout must not charge twice, and a
+   * timeout is exactly when a retry happens.
+   */
+  capture(input: CaptureInput): Promise<CaptureResult>;
 
   /** Mode A executes transfers to linked accounts. Mode B is a no-op. */
   applySplit(input: SplitInput): Promise<SplitResult>;

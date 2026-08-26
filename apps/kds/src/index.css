@@ -1,0 +1,451 @@
+@import 'tailwindcss';
+
+/**
+ * A kitchen tablet, not a phone. See DESIGN.md.
+ *
+ * Opposite constraints to the customer PWA and the styling follows: DARK BY
+ * DEFAULT, so a bright screen is not glaring at someone over a hot wok all day;
+ * very large type, because the tablet is mounted at arm's length and read at a
+ * glance; and enormous touch targets, because the person tapping has wet or
+ * gloved hands and cannot aim.
+ *
+ * Colour never carries meaning alone — a late ticket is red AND says how long it
+ * has been waiting, because kitchens are lit badly and roughly 1 in 12 men has
+ * some colour vision deficiency.
+ *
+ * WHY LIGHT MODE EXISTS HERE AT ALL
+ *
+ * Dark is right for a tablet mounted over a range. It is wrong for a tablet on a
+ * counter under a skylight, or by a window at 2pm, where a dark screen becomes a
+ * mirror. That is a real layout in real food courts, so the mode is available —
+ * it is simply not the default, because the range is the commoner case.
+ *
+ * THE `shell-*` SCALE READS AS DEPTH, NOT AS LIGHTNESS
+ *
+ * shell-900 is "furthest back" (the page) and shell-100 is "furthest forward"
+ * (primary text). That holds in both themes: in light mode 900 becomes pale and
+ * 100 becomes near-black, and every component keeps working without knowing
+ * which theme it is in.
+ */
+/* `inline` for the same reason the customer app uses it — see that file's note:
+   it compiles `bg-shell-800` straight to `var(--shell-800)`, so the theme swap
+   resolves in the element's own cascade with no layer question to reason about. */
+@theme inline {
+  --color-shell-900: var(--shell-900); /* page — furthest back */
+  --color-shell-800: var(--shell-800); /* card */
+  --color-shell-700: var(--shell-700); /* hairline */
+  --color-shell-600: var(--shell-600); /* raised hairline */
+  --color-shell-400: var(--shell-400); /* secondary text */
+  --color-shell-300: var(--shell-300); /* body */
+  --color-shell-100: var(--shell-100); /* primary text — furthest forward */
+
+  --color-go-500: var(--go-500); /* accept, ready */
+  --color-warn-500: var(--warn-500); /* ageing */
+  --color-late-500: var(--late-500); /* late, reject */
+  --color-brand-500: var(--brand-500); /* shared with the customer app */
+  --color-brand-400: var(--brand-400);
+
+  /* Status column accents. Deliberately distinct from the age tones above: one
+     says "where is this ticket in its life", the other says "how long has it
+     been sitting". A cook reads them for different reasons. */
+  --color-stage-new: var(--stage-new);
+  --color-stage-cooking: var(--stage-cooking);
+  --color-stage-ready: var(--stage-ready);
+
+  /*
+   * The dialog scrim, as a TOKEN rather than `bg-black/70`.
+   *
+   * A 70% black wash is right over a charcoal board and much too heavy over the
+   * light theme's pale one, where it turns the whole screen into a slab and the
+   * dialog stops reading as something on top of the board. Same name, two
+   * values, so no component has to know which theme it is in — the rule this
+   * whole stylesheet is built on.
+   */
+  --color-scrim: var(--scrim);
+
+  /*
+   * GLASS — hover and press, in a colour that means nothing.
+   *
+   * Replaces the late-500 washes on hover. Pointing at a control is not a
+   * semantic event and should not spend a semantic colour; red means
+   * something specific here and a cursor passing over a button does not.
+   */
+  --color-glass-fill: var(--glass-fill);
+  --color-glass-press: var(--glass-press);
+  --color-glass-edge: var(--glass-edge);
+
+  --radius-card: 1rem;
+}
+
+/* ============================================================================
+   DARK — the default for the kitchen
+   ========================================================================= */
+:root,
+[data-theme='dark'] {
+  --shell-900: #0e1116;
+  --shell-800: #171c23;
+  --shell-700: #232a33;
+  --shell-600: #3a444f;
+  --shell-400: #8b97a6;
+  --shell-300: #b6c0cc;
+  --shell-100: #eef2f6;
+
+  --go-500: #35c76a;
+  --warn-500: #f5a524;
+  --late-500: #ef4444;
+  --brand-500: #ff5a50;
+  --brand-400: #f26b62;
+
+  --stage-new: #ff5a50;
+  --stage-cooking: #f5a524;
+  --stage-ready: #35c76a;
+
+  /* Near-black at 72%. The board behind stays legible as shape, which is what
+     tells you the dialog is temporary rather than a new screen. */
+  --scrim: #070a0eb8;
+
+  /* Glass, DARK: a LIGHT wash, and heavier. Subtracting light from something
+     that is already near-black does nothing; glass here is the sheen ON the
+     pane, not the shadow under it. */
+  --glass-fill: #ffffff14; /* 8% */
+  --glass-press: #ffffff26; /* 15% */
+  --glass-edge: #ffffff33; /* 20% */
+
+  /* The pulse a new ticket uses. A custom property so the light theme can
+     darken it — a pale halo on a white card is invisible. */
+  --pulse-rgb: 255 90 80;
+
+  color-scheme: dark;
+}
+
+/* ============================================================================
+   LIGHT — for a tablet by a window
+   ========================================================================= */
+[data-theme='light'] {
+  --shell-900: #eef0f4; /* page. Deliberately not white: cards sit on it. */
+  --shell-800: #ffffff; /* card */
+  --shell-700: #dfe3ea; /* hairline */
+  --shell-600: #c2c9d4; /* raised hairline */
+  --shell-400: #5c6675; /* secondary text. #667080 held 4.5:1 on a card but
+                            only 4.39:1 on the page behind it. */
+  --shell-300: #3c4553; /* body */
+  --shell-100: #12151a; /* primary text */
+
+  /* Every status colour is darkened. The dark-theme greens and ambers are
+     tuned to glow against charcoal and fall under 3:1 on white, which would
+     put a late-order warning below the contrast floor. */
+  --go-500: #12874a;
+  --warn-500: #8a5b02; /* darkened: #A9700A was 4.19:1 on a white ticket */
+  --late-500: #c62b21;
+  /* #CF3A32 put the sign-in button's pale label at 4.30:1. This is the same
+     hue one step down, at 5.32:1. */
+  --brand-500: #b92e27;
+  --brand-400: #e8483f;
+
+  --stage-new: #cf3a32;
+  --stage-cooking: #a9700a;
+  --stage-ready: #12874a;
+
+  /* 45%, not 72%. The same wash that reads as "dimmed" over charcoal reads as
+     "the screen has gone out" over a pale board. */
+  --scrim: #12151a73;
+
+  /*
+   * Glass, LIGHT: a DARK wash. The page here is pale, so a white translucent
+   * film over a white card is literally nothing — the classic glassmorphism
+   * mistake, copied from dark-mode screenshots where it works. What reads as
+   * glass on a light surface is a faint shadow of the thing behind it.
+   */
+  --glass-fill: #12151a0f; /* 6% */
+  --glass-press: #12151a1f; /* 12% */
+  --glass-edge: #12151a29; /* 16% */
+
+  --pulse-rgb: 207 58 50;
+
+  color-scheme: light;
+}
+
+/*
+ * A NEW TICKET MUST BE NOTICED ACROSS A KITCHEN.
+ *
+ * The one animation in this app. Everything else is deliberately still —
+ * movement in peripheral vision while somebody is holding a hot pan is a hazard,
+ * not a delight. This pulses only the unaccepted tickets, only until they are
+ * accepted, and stops entirely under prefers-reduced-motion.
+ */
+@keyframes ticket-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(var(--pulse-rgb) / 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgb(var(--pulse-rgb) / 0);
+  }
+}
+
+.ticket-new {
+  animation: ticket-pulse 2s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticket-new {
+    animation: none;
+    /* The border still carries the meaning, so nothing is lost. */
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--shell-900);
+  color: var(--shell-100);
+  -webkit-font-smoothing: antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* A cook resting a hand on the screen must not select text or trigger the
+     iOS magnifier mid-service. */
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+/**
+ * …EXCEPT INSIDE A FIELD, WHERE SELECTING TEXT IS THE POINT.
+ *
+ * `user-select` inherits, so the rule above reached every input in the app. The
+ * symptom only shows up where there is real typing to do — the dish editor —
+ * and it is maddening rather than obvious: you cannot double-tap a price to
+ * replace it, or drag through a wrong URL. You have to backspace the whole
+ * field. The board keeps its protection; the form gets its behaviour back.
+ */
+input,
+textarea,
+select {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/**
+ * ============================================================================
+ * THE DISPLAY SERIF AND THE EYEBROW
+ * ============================================================================
+ *
+ * The third copy of these eighteen lines, and the reasoning is the same one the
+ * console's stylesheet gives: three separate Vite builds with no shared
+ * stylesheet, and duplicating two rules is cheaper than a package boundary for
+ * them. The customer app's file carries the long argument for why the serif is a
+ * STACK rather than a download.
+ *
+ * WHY A KITCHEN TABLET NEEDS THEM AT ALL
+ *
+ * Only on the sign-in screen. Nothing on the board itself is set in serif — a
+ * ticket is read at arm's length in three seconds and a display face would cost
+ * legibility for character, which is the wrong trade over a hot range. But the
+ * sign-in screen is the one moment this app is a PRODUCT rather than a tool: a
+ * cook seeing it for the first time should recognise the same thing the customer
+ * scanned downstairs and the manager uses in the office.
+ *
+ * These are plain classes, so `tests/design/tokens.mjs` only notices a missing
+ * one once it is USED — which is how the console shipped nine references to an
+ * undefined `.display` and rendered them as ordinary bold sans. Declared here
+ * before the markup that needs them, deliberately in that order.
+ */
+.display {
+  font-family: ui-serif, Georgia, 'Times New Roman', serif;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  font-weight: 700;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 700;
+}
+
+/**
+ * Strings a person reads character by character.
+ *
+ * Only one thing on this app qualifies: the image URL under an uploaded photo,
+ * which somebody copies out when they want the same picture somewhere else. A
+ * proportional font makes 0/O and 1/l/I ambiguous, and a URL is exactly the
+ * kind of string where one wrong character fails silently.
+ *
+ * `tests/design/tokens.mjs` caught this missing — it was used here before it
+ * was defined, which renders as ordinary sans and looks like a choice rather
+ * than a bug. Third app, third copy of these four lines; see the console's
+ * stylesheet for why that is cheaper than a shared package.
+ */
+.ident {
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  font-variant-ligatures: none;
+  letter-spacing: 0.01em;
+}
+
+/**
+ * Press feedback, one rule, both themes.
+ *
+ * The customer app carries the long version of this note. The kitchen-specific
+ * part: the press scale is SMALLER here (0.99, not 0.985) because the buttons
+ * are enormous — a 5% squash on a 300px "Ready" button is a lurch, and lurching
+ * controls next to a hot range is not a delight.
+ */
+.pressable {
+  transition: filter 120ms ease, transform 120ms ease, background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pressable:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+}
+
+.pressable:active:not(:disabled) {
+  filter: brightness(0.92);
+  transform: scale(0.99);
+}
+
+.pressable:disabled {
+  filter: none;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pressable:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/*
+ * The focus ring is BRIGHTER here than on the customer app, not dimmer.
+ *
+ * The kitchen board is the one surface in this product likely to be driven by
+ * keyboard — a mounted tablet often has a bluetooth keypad next to it, and
+ * during a rush that is faster than reaching for the screen.
+ */
+:focus-visible {
+  outline: 3px solid var(--brand-400);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/**
+ * ============================================================================
+ * GLASS — the hover and press treatment, in place of a red wash
+ * ============================================================================
+ *
+ * WHY NOT RED
+ *
+ * A tinted hover spends a semantic colour on a non-semantic event. Red in this
+ * app means one thing — the brand, and by extension the primary action — so a
+ * grid of dishes where every ADD button flushed red as the cursor swept past
+ * was announcing "important, important, important" at a pointer that was just
+ * on its way somewhere. Hover means "you are pointing at this". It should be
+ * legible and it should be silent.
+ *
+ * WHAT "GLASS" ACTUALLY BUYS
+ *
+ * Being honest about this: `backdrop-filter` blurs what is BEHIND the element,
+ * so it only reads as glass where something is behind it — the buttons over
+ * stall photographs, the controls on the red app bar, the offer carousel, the
+ * sheet headers. Over a flat white card there is nothing to blur and the effect
+ * degrades to the translucent wash alone. That is still the right answer,
+ * because the wash is the part that replaces the red; the blur is the part that
+ * makes it look deliberate where it can.
+ *
+ * `saturate` alongside the blur is what stops the frost going grey and dead
+ * over a colourful photograph.
+ *
+ * THREE STATES, NOT TWO
+ *
+ * Idle -> hover -> press must be three distinguishable steps. If press looks
+ * like hover, a tap on a slow connection gives no evidence it registered, and
+ * the customer taps again. `--glass-press` is roughly double `--glass-fill`
+ * for exactly that reason.
+ *
+ * THE `(hover: hover)` GUARD IS NOT OPTIONAL
+ *
+ * Without it a phone tap leaves the element stuck in its hover state until you
+ * tap somewhere else — the commonest mobile CSS bug there is. `.pressable`
+ * above already learned this; the same guard applies here.
+ */
+/**
+ * WHY `background-image` AND NOT `background-color`
+ *
+ * Half these controls already own an opaque background — the ADD button is
+ * `bg-surface`, the court card is `bg-surface`. Setting `background-color` on
+ * hover REPLACES that, so a white button would hover to "6% ink over whatever
+ * happens to be behind the card" — a different colour the moment anything
+ * changes behind it, and in a sheet or a modal, a hole. A gradient of one
+ * colour is a background-IMAGE, and images composite ON TOP of the colour
+ * instead of replacing it. The element keeps its own surface and gains a film.
+ */
+.glass-hover {
+  transition: background-image 140ms ease, border-color 140ms ease,
+    -webkit-backdrop-filter 140ms ease, backdrop-filter 140ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .glass-hover:hover:not(:disabled) {
+  }
+}
+
+.glass-hover:active:not(:disabled) {
+}
+
+.glass-hover:disabled {
+}
+
+/**
+ * The same material, but PERSISTENT — a thing that stays chosen.
+ *
+ * Separate from `.glass-hover` because selection and hover are different
+ * claims and must not look identical: if the selected filter looks exactly like
+ * whichever filter your cursor happens to be over, the rail has no state at
+ * all. So this is heavier, and it carries an EDGE — a hairline the hover
+ * treatment never draws. Weight and outline, rather than hue.
+ *
+ * It is applied unconditionally, not behind `(hover: hover)`, because it is not
+ * a pointer state. A phone must show it too.
+ */
+.glass-on {
+  background-image: linear-gradient(var(--glass-press), var(--glass-press));
+  border-color: var(--glass-edge);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  backdrop-filter: blur(14px) saturate(1.5);
+}
+
+/**
+ * A frosted RING, for things whose content is a photograph.
+ *
+ * The category rail used `ring-brand-500` to mark the chosen cuisine, which is
+ * a red circle drawn around a picture of food — the one place a red ring is
+ * genuinely ambiguous, because half the pictures have red in them. A light ring
+ * with a dark halo (or the inverse, per theme) separates from any photograph
+ * without competing with it, and it is the `--glass-edge` value doing the work
+ * so the whole treatment stays one vocabulary.
+ *
+ * Two shadows rather than a `ring`: the inner one sits ON the image edge and
+ * the outer one lifts it off the page, which is what makes a translucent
+ * outline survive a busy background.
+ */
+.glass-ring {
+  box-shadow:
+    0 0 0 2px var(--glass-edge),
+    0 0 0 4px var(--glass-fill),
+    0 2px 10px var(--glass-press);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-hover {
+    transition: none;
+  }
+}

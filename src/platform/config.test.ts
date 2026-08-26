@@ -5,6 +5,11 @@ const valid = {
   DATABASE_URL: 'postgres://u:p@localhost:5432/db',
   REDIS_URL: 'redis://localhost:6379',
   TAX_SECTION_9_5_APPLIES: 'true',
+  // 32 bytes, base64. Added to ConfigSchema without a default, deliberately —
+  // and this fixture was not updated with it, so three cases in this file have
+  // been failing on every clean checkout since. Exactly the drift the tax flag
+  // above is designed to cause loudly rather than quietly.
+  AUTH_SIGNING_SEED: 'TfLK3O5RF6lg6We08OCyWPb5IHs0ZfeiDG4NMfneTjY=',
 };
 
 describe('loadConfig()', () => {

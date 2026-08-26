@@ -10,7 +10,16 @@ import boundaries from 'eslint-plugin-boundaries';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'src/generated/**'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      'src/generated/**',
+      // The PWA is a separate workspace with its own tsconfig and its own
+      // rules. Linting it with the backend config would apply module-boundary
+      // rules that describe the server's architecture, not the client's.
+      'apps/**',
+    ],
   },
 
   js.configs.recommended,
@@ -103,15 +112,66 @@ export default tseslint.config(
                 'catalog',
                 'tenancy',
                 'identity',
+                // `ledger` added when order placement was built. The rows MUST
+                // be written in the same transaction as the order — a ledger
+                // that can lag the order it describes is a ledger that is
+                // sometimes wrong, and the window is exactly when a process
+                // dies mid-checkout.
+                //
+                // Direction is ordering -> ledger. `ledger` previously listed
+                // `ordering` in its own allow list, which would have made this
+                // a cycle; that entry was unused and has been removed, so the
+                // dependency runs one way only.
+                'ledger',
               ],
             },
             {
               from: 'payments',
-              allow: ['platform-pure', 'platform-io', 'pricing', 'ordering', 'tenancy'],
+              // `identity` is a second amendment to TDD §2.1, for the same
+              // reason as the one on `ordering`. The payment routes are
+              // customer-facing HTTP, and a customer-facing route has to be
+              // able to ask who is calling. The credential vocabulary lives in
+              // identity; the alternative is a second token verifier inside
+              // payments, which is exactly the duplication these rules exist to
+              // prevent. No cycle — identity depends only on platform.
+              //
+              // Opening a payment intent against a stranger's order used to be
+              // possible precisely because this import did not exist.
+              // `ledger` added when the refund engine was connected. A refund
+              // writes compensating entries in the SAME transaction as the
+              // refund row and the order transition — §14.6, the identical
+              // argument that put `ledger` in `ordering`'s list.
+              //
+              // Direction is payments -> ledger, one way. `ledger` listed
+              // `payments` in its own allow list and never used it, exactly as
+              // it once listed `ordering`; that dead entry is removed below so
+              // this does not become a cycle. A rule that permits an import
+              // nobody makes is indistinguishable from one that permits a
+              // mistake nobody has made yet.
+              allow: [
+                'platform-pure',
+                'platform-io',
+                'pricing',
+                'ordering',
+                'tenancy',
+                'identity',
+                'ledger',
+              ],
             },
             {
               from: 'ledger',
-              allow: ['platform-pure', 'platform-io', 'pricing', 'ordering', 'payments'],
+              // `ordering` removed: it was never imported, and leaving it
+              // would have permitted a cycle once ordering -> ledger was added.
+              // An unused permission is still a permission.
+              //
+              // `payments` removed for exactly the same reason when the refund
+              // engine was connected: nothing in src/ledger has ever imported
+              // it, and keeping it would have made payments -> ledger a cycle.
+              // The second instance of the same mistake is worth noting — a
+              // dependency rule written from the design rather than from the
+              // imports accumulates permissions nobody needs, and each one is a
+              // future cycle that lints clean.
+              allow: ['platform-pure', 'platform-io', 'pricing'],
             },
             { from: 'dispatch', allow: ['platform-pure', 'platform-io', 'ordering', 'tenancy'] },
             { from: 'notify', allow: ['platform-pure', 'platform-io', 'ordering', 'tenancy'] },

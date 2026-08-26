@@ -61,7 +61,7 @@ describe('the transition allow-list is exhaustive and closed (ORD-SM-01)', () =>
 
   it('an illegal transition throws INVALID_TRANSITION, never silently no-ops', () => {
     try {
-      assertTransitionAllowed('COMPLETED', 'PREPARING');
+      assertTransitionAllowed('COLLECTED', 'PREPARING');
       throw new Error('should have thrown');
     } catch (e) {
       expect((e as AppError).code).toBe('INVALID_TRANSITION');
@@ -71,9 +71,18 @@ describe('the transition allow-list is exhaustive and closed (ORD-SM-01)', () =>
 });
 
 describe('terminal states', () => {
-  it('are exactly the three we expect', () => {
+  it('are exactly the four we expect', () => {
     const terminal = ORDER_STATUSES.filter(isTerminal);
-    expect([...terminal].sort()).toEqual(['COMPLETED', 'PAYMENT_FAILED', 'REFUNDED']);
+    // PAYMENT_EXPIRED joins the list rather than folding into PAYMENT_FAILED.
+    // Nothing was declined, so there is nothing to retry and nothing to explain
+    // — but it is a different number, and the difference is how many customers
+    // walked away mid-payment. PRD §7.2.
+    expect([...terminal].sort()).toEqual([
+      'COLLECTED',
+      'PAYMENT_EXPIRED',
+      'PAYMENT_FAILED',
+      'REFUNDED',
+    ]);
   });
 
   it('cannot be left', () => {
@@ -86,7 +95,7 @@ describe('terminal states', () => {
 });
 
 describe('the happy path', () => {
-  it('walks CREATED to COMPLETED without an accept step', () => {
+  it('walks CREATED to COLLECTED without an accept step', () => {
     // PRD §9: the vendor never accepts. ACKNOWLEDGED is a machine event.
     const path: OrderStatus[] = [
       'CREATED',
@@ -96,7 +105,7 @@ describe('the happy path', () => {
       'ACKNOWLEDGED',
       'PREPARING',
       'READY',
-      'COMPLETED',
+      'COLLECTED',
     ];
     for (let i = 0; i < path.length - 1; i++) {
       expect(canTransition(path[i]!, path[i + 1]!), `${path[i]} -> ${path[i + 1]}`).toBe(true);
@@ -123,7 +132,7 @@ describe('rejection window (KDS-REJ-01)', () => {
 
   it('closes once the food is ready', () => {
     expect(isRejectable('READY')).toBe(false);
-    expect(isRejectable('COMPLETED')).toBe(false);
+    expect(isRejectable('COLLECTED')).toBe(false);
   });
 
   it('is not open before the customer has paid', () => {

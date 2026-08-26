@@ -17,9 +17,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import pg from 'pg';
+import type pg from 'pg';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+import { createPool } from '../../src/platform/db.js';
 
 const url = process.env.DATABASE_URL;
 const describeDb = url ? describe : describe.skip;
@@ -75,7 +77,10 @@ describeDb('schema.ts conforms to the live database', () => {
   let enumTypes = new Set<string>();
 
   beforeAll(async () => {
-    pool = new pg.Pool({ connectionString: url });
+    // createPool, not `new pg.Pool` — see tests/integration/money-driver.test.ts.
+    // Nothing here reads money, but the allowlist has fewer exceptions if the
+    // rule is simply "one place constructs pools".
+    pool = createPool({ connectionString: url! });
 
     // BASE TABLE only. `information_schema.columns` also describes views, and
     // the first run of this test duly demanded that schema.ts declare
@@ -123,7 +128,13 @@ describeDb('schema.ts conforms to the live database', () => {
   });
 
   it('declares no table the database lacks', () => {
-    const extra = [...declared.keys()].filter((t) => !actual.has(t));
+    // `actual` is BASE TABLEs only, but Kysely's Database interface legitimately
+    // declares views too — `v_menu_item_stock_remaining` is queried the same way
+    // a table is, and §6.2 requires remaining stock to be computed rather than
+    // stored. A declared view is therefore present, not missing; the check is
+    // that schema.ts names nothing the database has never heard of.
+    const known = new Set([...actual.keys(), ...views]);
+    const extra = [...declared.keys()].filter((t) => !known.has(t));
     expect(extra, 'tables schema.ts declares that do not exist').toEqual([]);
   });
 

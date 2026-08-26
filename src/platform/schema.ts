@@ -47,6 +47,20 @@ export type DbManaged = ColumnType<Date, never, never>;
 
 export type SettlementMode = 'PLATFORM_COLLECT' | 'VENDOR_DIRECT';
 
+/**
+ * NARROWER THAN THE DATABASE ENUM, DELIBERATELY.
+ *
+ * PostgreSQL cannot drop an enum label, so `order_status` still contains
+ * 'COMPLETED' and `payment_status` still contains 'INITIATED' and 'SUCCESS'.
+ * Migration 20260817000007 fences them off with CHECK constraints, and these
+ * unions say the same thing to the compiler: writing a retired value is a type
+ * error here and a constraint violation there. Two independent refusals of the
+ * same mistake, which is the point.
+ *
+ * The conformance test checks that an enum column is not widened to `string`.
+ * It does not require the union to enumerate every label the type happens to
+ * carry, because a label nothing may write is not part of the vocabulary.
+ */
 export type OrderStatus =
   | 'CREATED'
   | 'PAYMENT_PENDING'
@@ -55,8 +69,9 @@ export type OrderStatus =
   | 'ACKNOWLEDGED'
   | 'PREPARING'
   | 'READY'
-  | 'COMPLETED'
+  | 'COLLECTED'
   | 'PAYMENT_FAILED'
+  | 'PAYMENT_EXPIRED'
   | 'DISPATCH_FAILED'
   | 'REJECTED'
   | 'CANCELLED'
@@ -65,15 +80,31 @@ export type OrderStatus =
   | 'REFUND_FAILED'
   | 'RECONCILIATION_REQUIRED';
 
+/** PRD §8. The payment is its own object with its own lifecycle. */
 export type PaymentStatus =
-  | 'INITIATED'
+  | 'CREATED'
   | 'PENDING'
-  | 'SUCCESS'
+  | 'AUTHORIZED'
+  | 'CAPTURED'
   | 'FAILED'
+  | 'EXPIRED'
   | 'REFUND_PENDING'
   | 'REFUNDED'
+  | 'PARTIALLY_REFUNDED'
   | 'REFUND_FAILED'
   | 'RECONCILIATION_REQUIRED';
+
+/** PRD §6. Does this item exist on the menu at all. */
+export type ProductStatus = 'ACTIVE' | 'INACTIVE';
+
+/** PRD §6. Can it be ordered right now. Not the same question as the above. */
+export type ItemAvailability = 'AVAILABLE' | 'SOLD_OUT' | 'TEMPORARILY_UNAVAILABLE';
+
+/** PRD §6. Is a count being kept. */
+export type InventoryMode = 'TRACKED' | 'UNTRACKED';
+
+/** How a one-time code reached the customer. PRD §11.2. */
+export type OtpChannel = 'SMS' | 'WHATSAPP' | 'CONSOLE';
 
 export type RefundStatus = 'REQUESTED' | 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'ABANDONED';
 
@@ -123,6 +154,22 @@ export type ActorType =
   | 'PROVIDER_WEBHOOK'
   | 'POS_WEBHOOK';
 
+/**
+ * Authorisation roles. Distinct from ActorType on purpose — see migration
+ * 20260812000004. This list must stay identical to ROLES in
+ * src/identity/permissions.ts; the RBAC matrix is written against it.
+ */
+export type PlatformRole =
+  | 'CUSTOMER'
+  | 'DEVICE'
+  | 'VENDOR_OPERATOR'
+  | 'VENDOR_OWNER'
+  | 'MANAGER'
+  | 'COURT_OPERATOR'
+  | 'PLATFORM_OPS'
+  | 'PLATFORM_FINANCE'
+  | 'SUPER_ADMIN';
+
 export type CreditStatus = 'ISSUED' | 'CONSUMED' | 'EXPIRED' | 'VOIDED';
 
 export type ReconciliationState = 'OPEN' | 'INVESTIGATING' | 'RESOLVED' | 'WRITTEN_OFF';
@@ -167,6 +214,8 @@ export type IntegrationHealth = 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY' | 'UNKNOWN'
 export interface FoodCourtTable {
   id: Generated<string>;
   name: string;
+  /** The scannable identity of the court. One QR per venue, not per table. */
+  qr_token: string | null;
   city: string;
   address: string | null;
   timezone: Generated<string>;
@@ -207,6 +256,41 @@ export interface VendorTable {
   estimated_prep_minutes: Generated<number>;
   kds_last_heartbeat_at: Date | null;
   dispatch_blocked_at: Date | null;
+  /**
+   * Imagery. Both optional, permanently — a stall goes live without a
+   * photographer and the app draws a generated tile instead. See migration 12.
+   */
+  cover_image_url: string | null;
+  logo_url: string | null;
+  /**
+   * The carousel offer. Marketing only — it applies no discount at checkout.
+   *
+   * `offer_uploads_enabled` is the PLATFORM's grant and `offer_image_url` is
+   * the STALL's artwork. Neither party can do the other's half. See migration 14.
+   */
+  offer_image_url: string | null;
+  offer_headline: string | null;
+  offer_uploads_enabled: Generated<boolean>;
+  /**
+   * How many AI description generations this stall may spend, ever. See
+   * migration 17. Two by default; the platform raises it on request, which is
+   * what "contact the administration for more credits" resolves to.
+   */
+  ai_description_credits: Generated<number>;
+  /**
+   * Cashfree Easy Split payee id. NULL until the stall is onboarded to payouts.
+   *
+   * `settlement_mode` — which mode this stall settles in — is NOT here: it has
+   * been on `vendor` since migration 1, a few lines above. See migration 18.
+  /**
+   * The stall asking, and the platform answering. See migration 15.
+   *
+   * Two timestamps rather than one flag: "asked, nobody has looked" and
+   * "asked, the office said no" must read differently to the stall, or a
+   * decline is indistinguishable from a lost request and it asks again weekly.
+   */
+  offer_slot_requested_at: Date | null;
+  offer_slot_decided_at: Date | null;
   created_at: Generated<Date>;
   updated_at: DbManaged;
 }
@@ -226,7 +310,7 @@ export interface PlatformUserTable {
 export interface UserRoleAssignmentTable {
   id: Generated<string>;
   user_id: string;
-  role: ActorType;
+  role: PlatformRole;
   food_court_id: string | null;
   vendor_id: string | null;
   status: Generated<EntityStatus>;
@@ -248,18 +332,55 @@ export interface DeviceTable {
 
 export interface CustomerTable {
   id: Generated<string>;
+  /** E.164, enforced by `customer_phone_e164`. Unique where not null. */
   phone: string | null;
+  /**
+   * Optional, and never required to order.
+   *
+   * What to call the customer at the counter. `display_name` rather than `name`
+   * to match `platform_user.display_name` — two columns meaning "what to call
+   * this person" should not be spelled two ways.
+   */
+  display_name: string | null;
   phone_verified_at: Date | null;
   whatsapp_opt_in_at: Date | null;
   whatsapp_consent_version: string | null;
+  /** Bumping this revokes every token this customer holds. AUTH-05. */
+  token_version: Generated<number>;
+  last_seen_at: Date | null;
   created_at: Generated<Date>;
+}
+
+export interface CustomerOtpTable {
+  id: Generated<string>;
+  phone: string;
+  /** HMAC-SHA-256 under a server pepper, never the code. See src/identity/otp.ts. */
+  code_hash: string;
+  app_session_id: string | null;
+  channel: OtpChannel;
+  attempts: Generated<number>;
+  max_attempts: Generated<number>;
+  expires_at: Date;
+  dispatched_at: Date | null;
+  dispatch_error: string | null;
+  consumed_at: Date | null;
+  superseded_at: Date | null;
+  correlation_id: string | null;
+  created_at: Generated<Date>;
+}
+
+export interface RateLimitCounterTable {
+  bucket: string;
+  window_start: Date;
+  hits: Generated<number>;
+  updated_at: Generated<Date>;
 }
 
 export interface AppSessionTable {
   id: Generated<string>;
   customer_id: string | null;
   food_court_id: string;
-  court_table_id: string;
+  court_table_id: string | null;
   active_vendor_id: string | null;
   device_fingerprint: string | null;
   created_at: Generated<Date>;
@@ -297,13 +418,57 @@ export interface MenuItemTable {
   tax_rate_bps: Generated<number>;
   image_url: string | null;
   dietary_flags: Generated<string[]>;
-  is_available: Generated<boolean>;
-  unavailable_until: Date | null;
+  /** PRD §6 — three separate concepts, deliberately not one boolean. */
+  status: Generated<ProductStatus>;
+  availability: Generated<ItemAvailability>;
+  inventory_mode: Generated<InventoryMode>;
+  /**
+   * When availability reverts to AVAILABLE by itself. Null while available.
+   *
+   * Formerly `unavailable_until`, which read as a double negative at every
+   * call site and looked like it applied only to temporary closure.
+   */
+  available_from: Date | null;
   sort_order: Generated<number>;
+  /**
+   * The STALL's own recommendation — migration 21.
+   *
+   * Deliberately not the same thing as the computed `bestseller` the discovery
+   * menu sends: that one is SUM(quantity) over seven days and is not editable
+   * by anybody. This is a cook's opinion, capped at three per vendor by the
+   * endpoint, and the customer app labels it "Must try" rather than borrowing
+   * a word that implies a measurement.
+   */
+  must_try: Generated<boolean>;
   variant_groups: Generated<Json>;
   addon_groups: Generated<Json>;
   created_at: Generated<Date>;
   updated_at: DbManaged;
+  /** Warn the kitchen at or below this many. NULL uses the platform default. */
+  low_stock_threshold: number | null;
+}
+
+/** One row per item per court-local service day. PRD §6. */
+export interface MenuItemStockTable {
+  menu_item_id: string;
+  service_date: string;
+  daily_stock: number;
+  set_by: string | null;
+  created_at: Generated<Date>;
+  updated_at: DbManaged;
+}
+
+export interface MenuItemStockHistoryTable {
+  id: Generated<number>;
+  menu_item_id: string;
+  service_date: string;
+  previous_stock: number | null;
+  new_stock: number;
+  actor_type: ActorType;
+  actor_id: string | null;
+  note: string | null;
+  correlation_id: string | null;
+  created_at: Generated<Date>;
 }
 
 export interface CartTable {
@@ -350,11 +515,19 @@ export interface FeeRuleTable {
 export interface OrderTable {
   id: Generated<string>;
   public_order_number: string;
+  /**
+   * The trading day this order belongs to. See migration 19.
+   *
+   * Set by the application rather than derived from `created_at`, because the
+   * unique index keys on it and no timezone-dependent expression may appear in
+   * an index. `public_order_number` is unique within a court PER DAY.
+   */
+  business_date: string;
   app_session_id: string | null;
   customer_id: string | null;
   food_court_id: string;
   vendor_id: string;
-  court_table_id: string;
+  court_table_id: string | null;
   status: Generated<OrderStatus>;
   settlement_mode_snapshot: SettlementMode;
   fee_rule_snapshot: Json;
@@ -381,7 +554,8 @@ export interface OrderTable {
   acknowledged_at: Date | null;
   preparing_at: Date | null;
   ready_at: Date | null;
-  completed_at: Date | null;
+  /** PRD §7.1 — handed over, not merely cooked. Renamed from completed_at. */
+  collected_at: Date | null;
   terminal_at: Date | null;
   updated_at: DbManaged;
 }
@@ -452,11 +626,26 @@ export interface PaymentTable {
   provider_payment_ref: string | null;
   provider_fee_paise: number | null;
   split_instruction: Json | null;
+  /**
+   * What the provider gave the client to open a checkout with. See migration 20.
+   *
+   * Stored because `createIntent` returns an existing live intent, and the
+   * payload cannot be rebuilt: Cashfree issues `payment_session_id` once, at
+   * order creation. Without this, the second request for the same intent
+   * returned a reconstruction with no session in it.
+   */
+  checkout_payload: Json | null;
   failure_code: string | null;
   failure_message: string | null;
   provider_created_at: Date | null;
   created_at: Generated<Date>;
-  succeeded_at: Date | null;
+  /** Funds blocked, not taken. PRD §8.1. */
+  authorized_at: Date | null;
+  /** Funds taken. Renamed from succeeded_at, which was as vague as SUCCESS. */
+  captured_at: Date | null;
+  /** When the intent or the block lapses. PAY-REC-06. */
+  expires_at: Date | null;
+  refunded_paise: Generated<number>;
   updated_at: DbManaged;
 }
 
@@ -613,6 +802,51 @@ export interface AnalyticsEventTable {
 }
 
 /** The shape `Kysely<Database>` is parameterised by. */
+/**
+ * A diner asked to be told when a sold-out dish is orderable again.
+ *
+ * Keyed on the SESSION rather than the customer: most people who hit a sold-out
+ * item have never verified a phone number, and keying on `customer_id` would
+ * offer the feature only to people who had already bought something.
+ */
+export interface StockWatchTable {
+  id: Generated<string>;
+  menu_item_id: string;
+  app_session_id: string;
+  customer_id: string | null;
+  created_at: Generated<Date>;
+  expires_at: Date;
+  /** Set once by the sweep. The exactly-once guard — never cleared. */
+  restocked_at: Date | null;
+  /** The customer was shown it. A different fact from `restocked_at`. */
+  seen_at: Date | null;
+}
+
+/**
+ * One AI description attempt. See migration 17.
+ *
+ * A ledger rather than a counter on `vendor`: usage is `COUNT(*) WHERE outcome
+ * = 'OK'`, which is derived from the events that caused it and so cannot drift
+ * from them. It is also the only shape that can answer "when, on what dish, and
+ * did it actually work" — the questions that arrive the first time a stall says
+ * it never spent its credits.
+ */
+export interface AiGenerationTable {
+  id: Generated<string>;
+  vendor_id: string;
+  /** Null when generated for a dish not saved yet, or one deleted since. */
+  menu_item_id: string | null;
+  dish_name: string;
+  provider: string;
+  model: string;
+  /** Only `'OK'` is charged. Failures are recorded and free. */
+  outcome: string;
+  generated_text: string | null;
+  duration_ms: number | null;
+  staff_user_id: string | null;
+  created_at: Generated<Date>;
+}
+
 export interface Database {
   food_court: FoodCourtTable;
   court_table: CourtTableTable;
@@ -621,15 +855,20 @@ export interface Database {
   user_role_assignment: UserRoleAssignmentTable;
   device: DeviceTable;
   customer: CustomerTable;
+  customer_otp: CustomerOtpTable;
+  rate_limit_counter: RateLimitCounterTable;
   app_session: AppSessionTable;
   menu: MenuTable;
   menu_category: MenuCategoryTable;
   menu_item: MenuItemTable;
+  menu_item_stock: MenuItemStockTable;
+  menu_item_stock_history: MenuItemStockHistoryTable;
   cart: CartTable;
   cart_item: CartItemTable;
   fee_rule: FeeRuleTable;
   'order': OrderTable;
   order_item: OrderItemTable;
+  stock_watch: StockWatchTable;
   order_status_history: OrderStatusHistoryTable;
   dispatch_attempt: DispatchAttemptTable;
   escalation_state: EscalationStateTable;
@@ -642,13 +881,37 @@ export interface Database {
   reconciliation_item: ReconciliationItemTable;
   notification: NotificationTable;
   pos_integration: PosIntegrationTable;
+  ai_generation: AiGenerationTable;
   audit_log: AuditLogTable;
   analytics_event: AnalyticsEventTable;
   schema_migrations: SchemaMigrationsTable;
+
+  // Views. Selectable, never insertable — see the note below.
+  v_menu_item_stock_remaining: MenuItemStockRemainingView;
 }
 
 export interface SchemaMigrationsTable {
   version: string;
   filename: string;
   applied_at: Generated<Date>;
+}
+
+/**
+ * VIEWS.
+ *
+ * Read-only, and typed so Kysely can select from them. Every column is
+ * non-optional on select and none may be inserted — a view that looks
+ * writeable in the type system is an invitation to try.
+ *
+ * The conformance test filters `information_schema.tables` to BASE TABLE, so
+ * these are deliberately outside the `Database` tables it checks and are
+ * declared here instead.
+ */
+export interface MenuItemStockRemainingView {
+  menu_item_id: ColumnType<string, never, never>;
+  service_date: ColumnType<string, never, never>;
+  daily_stock: ColumnType<number, never, never>;
+  consumed: ColumnType<number, never, never>;
+  /** May be negative. See v_stock_oversold and migration 008. */
+  remaining: ColumnType<number, never, never>;
 }

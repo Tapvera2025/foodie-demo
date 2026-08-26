@@ -21,13 +21,20 @@ export const PERMISSIONS = [
   'order.acknowledge',
   'order.prepare',
   'order.ready',
-  'order.complete',
+  'order.collect',
   'order.reject',
   'order.cancel.self',
   'order.force_cancel',
   'refund.initiate',
   'refund.retry',
+  // Availability and inventory are different acts on different objects (PRD §6).
+  // "We're out of rolls" is a state change anyone on the line can make; setting
+  // tomorrow's count of 100 is a planning decision. One permission for both
+  // would mean a cook who can mark an item sold out can also silently set the
+  // day's stock to zero, which looks identical to the customer and completely
+  // different in the stock history.
   'stock.toggle',
+  'inventory.write',
   'vendor.ordering.toggle',
   'device.read',
   'menu.write',
@@ -128,7 +135,9 @@ export const PERMISSION_MATRIX: Readonly<
 
   'order.prepare': { DEVICE: ALLOW, VENDOR_OPERATOR: ALLOW, VENDOR_OWNER: ALLOW },
   'order.ready': { DEVICE: ALLOW, VENDOR_OPERATOR: ALLOW, VENDOR_OWNER: ALLOW },
-  'order.complete': {
+  // Handing food over is a counter action, so a manager standing at the stall
+  // can close a ticket the cook forgot. PRD §7.1.
+  'order.collect': {
     DEVICE: ALLOW,
     VENDOR_OPERATOR: ALLOW,
     VENDOR_OWNER: ALLOW,
@@ -148,6 +157,10 @@ export const PERMISSION_MATRIX: Readonly<
   'refund.retry': { PLATFORM_OPS: ALLOW, PLATFORM_FINANCE: ALLOW },
 
   'stock.toggle': { DEVICE: ALLOW, VENDOR_OPERATOR: ALLOW, VENDOR_OWNER: ALLOW },
+
+  // Not DEVICE. A tablet mounted on a wall in a busy kitchen is the wrong
+  // place to change a number that decides how much can be sold all day.
+  'inventory.write': { VENDOR_OPERATOR: ALLOW, VENDOR_OWNER: ALLOW, PLATFORM_OPS: ALLOW },
   'vendor.ordering.toggle': {
     DEVICE: ALLOW,
     VENDOR_OPERATOR: ALLOW,
