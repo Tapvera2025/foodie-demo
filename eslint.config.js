@@ -71,6 +71,7 @@ export default tseslint.config(
         { type: 'realtime', mode: 'folder', pattern: 'src/realtime' },
         { type: 'console', mode: 'folder', pattern: 'src/console' },
         { type: 'pos', mode: 'folder', pattern: 'src/pos' },
+        { type: 'sync', mode: 'folder', pattern: 'src/sync' },
         { type: 'analytics', mode: 'folder', pattern: 'src/analytics' },
         { type: 'health', mode: 'folder', pattern: 'src/health' },
         { type: 'root', mode: 'file', pattern: 'src/*.ts' },
@@ -184,6 +185,21 @@ export default tseslint.config(
             {
               from: 'pos',
               allow: ['platform-pure', 'platform-io', 'catalog', 'ordering', 'dispatch'],
+            },
+            {
+              from: 'sync',
+              // Reads/writes orders+payments (edge->cloud export/import) and
+              // catalog (cloud->edge export/import); `identity` for the
+              // manual "sync now" controller's StaffGuard/permission check.
+              allow: [
+                'platform-pure',
+                'platform-io',
+                'ordering',
+                'payments',
+                'catalog',
+                'tenancy',
+                'identity',
+              ],
             },
             { from: 'analytics', allow: ['platform-pure', 'platform-io'] },
             { from: 'health', allow: ['platform-pure', 'platform-io'] },

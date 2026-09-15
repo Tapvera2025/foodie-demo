@@ -148,13 +148,27 @@ export function businessDate(now: Date = new Date()): string {
  * The lock the caller holds is still required: `MAX + 1` races exactly as
  * `COUNT + 1` did, and two customers told to collect the same order is the
  * failure that matters at a counter.
+ *
+ * THE LETTER IS PER-DEPLOYMENT, NOT HARDCODED
+ *
+ * `ORDER_NUMBER_PREFIX` (config.ts) used to be a literal `'A-'`. Two
+ * independent database instances (an always-online system and an offline edge
+ * box that syncs to it later) generating numbers independently for the same
+ * food court would both propose `A-001` — a collision the unique index cannot
+ * catch until the two are merged, because each instance sees itself as the
+ * only writer. Giving each instance its own letter makes that impossible
+ * rather than merely unlikely: `A-001` and `B-001` are different strings, so
+ * they can never collide regardless of when or how the data is combined.
  */
 async function nextOrderNumber(trx: Transaction<Database>, foodCourtId: string): Promise<string> {
+  const prefix = config().ORDER_NUMBER_PREFIX;
+
   const row = await trx
     .selectFrom('order')
     .select((eb) => eb.fn.max<string | null>('public_order_number').as('highest'))
     .where('food_court_id', '=', foodCourtId)
     .where('business_date', '=', businessDate())
+    .where('public_order_number', 'like', `${prefix}-%`)
     .executeTakeFirst();
 
   /*
@@ -167,7 +181,7 @@ async function nextOrderNumber(trx: Transaction<Database>, foodCourtId: string):
    * out here than at the counter.
    */
   const highest = row?.highest ?? null;
-  const n = highest ? Number(highest.replace(/^A-/, '')) : 0;
+  const n = highest ? Number(highest.slice(prefix.length + 1)) : 0;
 
   if (!Number.isFinite(n)) {
     throw new AppError(
@@ -179,11 +193,11 @@ async function nextOrderNumber(trx: Transaction<Database>, foodCourtId: string):
   if (n >= 999) {
     throw new AppError(
       'RECONCILIATION_REQUIRED',
-      'This court has issued 999 order numbers today; the A-000 format is exhausted.',
+      `This court has issued 999 order numbers today; the ${prefix}-000 format is exhausted.`,
     );
   }
 
-  return `A-${String(n + 1).padStart(3, '0')}`;
+  return `${prefix}-${String(n + 1).padStart(3, '0')}`;
 }
 
 export class OrderRepository {

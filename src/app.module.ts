@@ -16,6 +16,7 @@ import { DescribeController } from './catalog/describe.controller.js';
 import { ConsoleController } from './console/console.controller.js';
 import { CourtController } from './console/court.controller.js';
 import { ConsoleVendorController } from './console/vendor.controller.js';
+import { SyncController } from './sync/sync.controller.js';
 import { PaymentModule } from './payments/payment.module.js';
 import { WorkersModule } from './platform/workers.module.js';
 
@@ -67,6 +68,14 @@ import { WorkersModule } from './platform/workers.module.js';
      */
     CourtController,
     ConsoleVendorController,
+    /**
+     * `api/v1/console/sync/**` — the offline-sync demo milestone's manual
+     * "sync now" + status. `sync.trigger` is its own permission (PLATFORM_OPS
+     * only) rather than reusing `tenant.manage`, matching the rest of this
+     * console: one prefix, one permission, no handler anyone has to guess the
+     * scope of.
+     */
+    SyncController,
   ],
   providers: [
     // Global, so no controller can forget it and leak a stack trace.

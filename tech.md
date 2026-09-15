@@ -179,7 +179,7 @@ Corrections are new compensating entries. Nothing is ever edited.
 
 ### Schema
 
-36 tables, 23 migrations, applied from empty on every push and constraint-verified
+37 tables, 24 migrations, applied from empty on every push and constraint-verified
 by `npm run test:constraints`.
 
 Migrations are plain `.sql` run by `scripts/migrate.ts` — about 60 lines over
@@ -215,7 +215,7 @@ A guard proves *who*; `decide()` in `src/identity/rbac.ts` decides *what they
 may do*. A guard that also authorises comes to mean "signed in", and then
 everyone signed in gets everything.
 
-**31 permissions × 9 roles** in one matrix (`src/identity/permissions.ts`).
+**32 permissions × 9 roles** in one matrix (`src/identity/permissions.ts`).
 `tests/conformance/console-authz.mjs` asserts every console handler calls
 `decide` — and contains a negative control that sabotages a controller in memory
 to prove the check can fail.
@@ -225,7 +225,7 @@ to prove the check can fail.
 `SUPER_ADMIN` + `PLATFORM_OPS` + `PLATFORM_FINANCE`: one login, and an audit log
 that can still say which hat an action was taken under.
 
-`SUPER_ADMIN` holds exactly **one** of the 31 permissions — `tenant.manage`.
+`SUPER_ADMIN` holds exactly **one** of the 32 permissions — `tenant.manage`.
 That looks like an oversight and is not: a super admin can create tenants and
 cannot silently reprice a menu or move money.
 

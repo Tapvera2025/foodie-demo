@@ -885,6 +885,7 @@ export interface Database {
   audit_log: AuditLogTable;
   analytics_event: AnalyticsEventTable;
   schema_migrations: SchemaMigrationsTable;
+  sync_watermark: SyncWatermarkTable;
 
   // Views. Selectable, never insertable — see the note below.
   v_menu_item_stock_remaining: MenuItemStockRemainingView;
@@ -894,6 +895,23 @@ export interface SchemaMigrationsTable {
   version: string;
   filename: string;
   applied_at: Generated<Date>;
+}
+
+/**
+ * How far each side of the offline-sync pipeline has gotten. See migration 24.
+ *
+ * Not an outbox: orders/catalog rows are read fresh from their own tables at
+ * export time, this only remembers the cursor per (device, domain,
+ * direction).
+ */
+export interface SyncWatermarkTable {
+  device_id: string;
+  domain: 'orders' | 'catalog';
+  direction: 'export' | 'import';
+  watermark_updated_at: Date | null;
+  watermark_row_id: string | null;
+  last_synced_at: Generated<Date>;
+  last_batch_row_count: Generated<number>;
 }
 
 /**

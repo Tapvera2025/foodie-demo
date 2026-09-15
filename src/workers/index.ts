@@ -38,6 +38,8 @@ import { StockWatchRepository } from '../catalog/stock-watch.repository.js';
 import { buildCustomerLadder, buildOpsLadder } from '../notify/channel.js';
 import { PaymentRepository } from '../payments/payment.repository.js';
 import { buildPaymentProvider } from '../payments/provider.factory.js';
+import { createAblyTransport } from '../sync/ably-transport.js';
+import { SyncOrchestrator } from '../sync/sync.orchestrator.js';
 
 /**
  * 1.5 seconds, and the number is derived rather than chosen.
@@ -57,6 +59,13 @@ import { buildPaymentProvider } from '../payments/provider.factory.js';
 const TICK_MS = 1_500;
 /** Rate-limit windows and other housekeeping. No need to run this often. */
 const HOUSEKEEPING_EVERY_TICKS = 120;
+/**
+ * Edge-only: how often to probe for connectivity. 10 ticks at 1.5s is 15s —
+ * often enough that a ~5 minute connectivity window is not spent waiting for
+ * the next probe, rare enough that a genuinely offline device is not
+ * hammering Ably with a connection attempt every tick.
+ */
+const SYNC_PROBE_EVERY_TICKS = 10;
 
 async function main(): Promise<void> {
   let cfg;
@@ -117,6 +126,27 @@ async function main(): Promise<void> {
   });
   const refunds = new RefundRepository(db, provider, new AuditRepository(db));
   const stockWatches = new StockWatchRepository(db);
+
+  /*
+   * OFFLINE SYNC (demo milestone). `off` by default, so every existing
+   * deployment is unaffected. `cloud` subscribes once, here, and stays
+   * attached for the process lifetime — it never depends on Ably's short
+   * history/rewind window because it is always the one listening.  `edge`
+   * gets one probe sweep per SYNC_PROBE_EVERY_TICKS, below.
+   */
+  const syncTransport =
+    cfg.SYNC_MODE === 'off'
+      ? null
+      : createAblyTransport({
+          apiKey: cfg.ABLY_API_KEY as string,
+          forceOffline: cfg.SYNC_FORCE_OFFLINE ?? false,
+        });
+  const syncOrchestrator = syncTransport ? new SyncOrchestrator(db, syncTransport) : null;
+
+  if (cfg.SYNC_MODE === 'cloud' && syncOrchestrator) {
+    const edgeDeviceIds = (cfg.SYNC_EDGE_DEVICE_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    await syncOrchestrator.startCloudResponder(edgeDeviceIds);
+  }
 
   let running = true;
   let ticks = 0;
@@ -321,10 +351,15 @@ async function main(): Promise<void> {
       });
     }
 
+    if (cfg.SYNC_MODE === 'edge' && syncOrchestrator && ticks % SYNC_PROBE_EVERY_TICKS === 0) {
+      await safely('sync_probe', () => syncOrchestrator.runEdgeCycleIfIdle(cfg.SYNC_DEVICE_ID as string));
+    }
+
     const elapsed = Date.now() - started;
     if (running) await sleep(Math.max(0, TICK_MS - elapsed));
   }
 
+  syncTransport?.close();
   await pool.end();
   rootLogger.info({ event: 'worker_shutdown_complete' }, 'closed cleanly');
   process.exit(0);

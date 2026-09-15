@@ -83,12 +83,15 @@
     "test:split": "node --experimental-strip-types tests/conformance/split.mjs",
     "split:setup": "node --env-file-if-exists=.env --import tsx scripts/split-setup.ts",
     "diagnose:split": "node --env-file-if-exists=.env --import tsx scripts/diagnose-split.ts",
-    "test:scriptdb": "node tests/conformance/script-db.mjs"
+    "test:scriptdb": "node tests/conformance/script-db.mjs",
+    "sync:bootstrap": "node --env-file-if-exists=.env --import tsx scripts/sync-bootstrap.ts",
+    "sync:run": "node --env-file-if-exists=.env --import tsx scripts/sync-run.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
+    "ably": "^2.6.4",
     "jose": "^6.2.8",
     "kysely": "^0.27.4",
     "pg": "^8.13.0",

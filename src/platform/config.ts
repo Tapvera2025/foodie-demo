@@ -281,6 +281,51 @@ export const ConfigSchema = z.object({
   // Vendor device liveness (PRD KDS-HB-01/02).
   DEVICE_HEARTBEAT_INTERVAL_SECONDS: intFromString(1, 300).default(15),
   DEVICE_OFFLINE_THRESHOLD_SECONDS: intFromString(1, 3600).default(60),
+
+  /**
+   * The letter in `A-001`. Was hardcoded; now per-deployment.
+   *
+   * Two independent database instances (an always-online "cloud" system and an
+   * offline "edge" box that syncs occasionally) computing order numbers
+   * independently for the same food court would both start at `A-001` and
+   * collide the moment their data is merged — the unique index is scoped by
+   * `(food_court_id, business_date, public_order_number)`, so a different
+   * letter per instance is enough to make that impossible rather than merely
+   * unlikely. See `nextOrderNumber` in `src/ordering/order.repository.ts`.
+   */
+  ORDER_NUMBER_PREFIX: z
+    .string()
+    .regex(/^[A-Z]{1,3}$/, 'must be 1-3 uppercase letters, e.g. "A"')
+    .default('A'),
+
+  /**
+   * ==========================================================================
+   * OFFLINE SYNC (demo milestone)
+   * ==========================================================================
+   *
+   * `off` (default) means every existing dev/test/CI environment is completely
+   * unaffected — the sync module never starts and none of the fields below are
+   * read. `cloud` is the always-online instance: it stays subscribed and
+   * answers whatever an edge device asks for. `edge` is the instance that is
+   * normally cut off from the internet and periodically gets a short
+   * connectivity window to sync through Ably.
+   *
+   * ABLY_API_KEY is never sent to a browser — it authenticates this process's
+   * server-to-server connection to Ably only.
+   */
+  SYNC_MODE: z.enum(['off', 'cloud', 'edge']).default('off'),
+  /** This process's own identity. Required when SYNC_MODE=edge. */
+  SYNC_DEVICE_ID: z.string().min(1).optional(),
+  /** Comma-separated edge device ids this cloud instance listens for. Required when SYNC_MODE=cloud. */
+  SYNC_EDGE_DEVICE_IDS: z.string().min(1).optional(),
+  ABLY_API_KEY: z.string().min(1).optional(),
+  /**
+   * DEMO-ONLY escape hatch. Forces the edge connectivity probe to report
+   * unreachable without touching the network, so "hotspot on/off" can be
+   * simulated by flipping an env var (and restarting the worker) instead of
+   * physically breaking a connection.
+   */
+  SYNC_FORCE_OFFLINE: boolFromString.optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -316,6 +361,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       throw new ConfigError([
         `DISPATCH_LADDER steps must strictly increase, got [${ladder.join(', ')}]`,
       ]);
+    }
+  }
+
+  // A sync mode with no way to reach Ably, or no idea who it's talking to, is
+  // a process that starts and then does nothing — better to refuse to boot
+  // than to demo a "sync" that silently never runs.
+  if (cfg.SYNC_MODE === 'cloud') {
+    const missing = [
+      !cfg.ABLY_API_KEY && 'ABLY_API_KEY',
+      !cfg.SYNC_EDGE_DEVICE_IDS && 'SYNC_EDGE_DEVICE_IDS',
+    ].filter((v): v is string => Boolean(v));
+    if (missing.length > 0) {
+      throw new ConfigError([`SYNC_MODE=cloud requires: ${missing.join(', ')}`]);
+    }
+  }
+  if (cfg.SYNC_MODE === 'edge') {
+    const missing = [!cfg.ABLY_API_KEY && 'ABLY_API_KEY', !cfg.SYNC_DEVICE_ID && 'SYNC_DEVICE_ID'].filter(
+      (v): v is string => Boolean(v),
+    );
+    if (missing.length > 0) {
+      throw new ConfigError([`SYNC_MODE=edge requires: ${missing.join(', ')}`]);
     }
   }
 

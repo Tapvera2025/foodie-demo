@@ -48,6 +48,9 @@ export const PERMISSIONS = [
   'reconciliation.resolve',
   'audit.read',
   'tenant.manage',
+  // Manual "sync now" / status check for the offline-sync demo milestone —
+  // ops-only, same tier as the other platform-operations permissions.
+  'sync.trigger',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -201,6 +204,8 @@ export const PERMISSION_MATRIX: Readonly<
 
   // Absent from every other column, on purpose.
   'tenant.manage': { SUPER_ADMIN: ALLOW },
+
+  'sync.trigger': { PLATFORM_OPS: ALLOW },
 };
 
 export function grantFor(permission: Permission, role: Role): Grant | undefined {
