@@ -12,6 +12,7 @@ import {
 
 import './index.css';
 import { useIsSignedIn, type StockWatch } from './lib/api';
+import { useCart } from './lib/cart';
 import { ToastProvider, useToast } from './lib/notify';
 import { useRestockAnnouncements } from './lib/stock-watch';
 import { initTheme } from './lib/theme';
@@ -128,7 +129,23 @@ function RequireVerified({ children }: { children: React.ReactElement }) {
   const signedIn = useIsSignedIn();
   const location = useLocation();
 
-  if (!signedIn) {
+  /*
+   * A court with no internet cannot send an OTP, and this gate would then be a
+   * redirect to a screen whose only button can never succeed — the customer
+   * bounced to /verify, typing a number, waiting for a code that no channel
+   * exists to carry.
+   *
+   * The server is the enforcement (`OrderIdentityGuard`). This is the UI
+   * agreeing with it, so the two do not disagree in the direction that strands
+   * somebody at a checkout they are allowed to complete.
+   *
+   * Verification still WORKS in counter mode where it can — this only stops it
+   * being compulsory. A customer who signs in gets their name on the ticket and
+   * their notifications.
+   */
+  const counterMode = useCart((c) => c.identityMode) === 'counter';
+
+  if (!signedIn && !counterMode) {
     /*
      * `replace`, and carry where they were going.
      *

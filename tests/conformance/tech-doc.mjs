@@ -228,8 +228,21 @@ const perms = read('src/identity/permissions.ts');
  * was wrong by one in the direction that looks plausible, which is the kind of
  * off-by-one nobody investigates.
  */
-const nPerms = perms.split('] as const')[0].split('\n').filter((l) => /^\s+'[a-z._]+',$/.test(l)).length;
-const nRoles = perms.split('] as const')[1].split('\n').filter((l) => /^\s+'[A-Z_]+',$/.test(l)).length;
+/*
+ * `\r?$`, because this repository is checked out on Windows too.
+ *
+ * `core.autocrlf=true` gives the working tree CRLF line endings, so splitting
+ * on '\n' leaves a trailing '\r' on every line and `$` matches nothing. The
+ * count came back as 0 — not off by one, but zero, on a file that plainly
+ * contains thirty-odd permissions — and the check reported the doc's honest
+ * number as wrong on every Windows machine while passing on every Linux one.
+ *
+ * A conformance check that depends on the checkout platform is a check people
+ * learn to ignore, which is worse than not having it. Same class of defect as
+ * the path separator bug in console-authz.mjs.
+ */
+const nPerms = perms.split('] as const')[0].split('\n').filter((l) => /^\s+'[a-z._]+',\r?$/.test(l)).length;
+const nRoles = perms.split('] as const')[1].split('\n').filter((l) => /^\s+'[A-Z_]+',\r?$/.test(l)).length;
 
 const claimedPerms = quoted(/\*\*(\d+) permissions × \d+ roles\*\*/, 'permission count');
 const claimedRoles = quoted(/\*\*\d+ permissions × (\d+) roles\*\*/, 'role count');

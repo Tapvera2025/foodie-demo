@@ -13,6 +13,7 @@
 
 import { randomBytes } from 'node:crypto';
 
+import { DEFAULT_PWA_BASE_URL } from '../src/platform/config.js';
 import { createDb, createPool } from '../src/platform/db.js';
 import { generateQrToken } from '../src/tenancy/qr.js';
 import { hashPassword } from '../src/identity/password.js';
@@ -318,7 +319,9 @@ async function main(): Promise<void> {
       .execute();
   }
 
-  const base = process.env.PWA_BASE_URL ?? 'http://localhost:5173';
+  // The default is shared with ConfigSchema rather than repeated, so the link
+  // printed here cannot drift from the one an issued QR encodes.
+  const base = process.env.PWA_BASE_URL ?? DEFAULT_PWA_BASE_URL;
   console.log(`\n  ${COURT}`);
   console.log(`  ${vendorSpecs.length} vendors\n`);
   console.log('  Scan URL — open it in a browser to start a session:\n');

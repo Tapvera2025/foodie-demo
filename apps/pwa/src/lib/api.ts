@@ -200,6 +200,19 @@ export interface ScanResult {
   resumed: boolean;
   expiresAt: string;
   foodCourt: { id: string; name: string };
+  /**
+   * Whether this court can ask for an OTP at all.
+   *
+   * `counter` means it cannot — no internet, so no channel carries a code —
+   * and ordering is instead authorised by paying a cashier. See
+   * ORDER_IDENTITY_MODE in the server's config.
+   *
+   * Optional on the wire so an older server, which does not send it, reads as
+   * `otp`: the strict setting. A client that defaulted the other way would
+   * drop the verification gate against a server still enforcing it, and every
+   * checkout would 401 with no explanation.
+   */
+  identityMode?: 'otp' | 'counter';
 }
 
 export interface VendorSummary {

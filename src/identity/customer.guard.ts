@@ -93,6 +93,22 @@ export class CustomerGuard implements CanActivate {
 }
 
 /** Reads what the guard attached. Throws if used on an unguarded route. */
+/**
+ * The customer on this request, or null if there is none.
+ *
+ * For `ORDER_IDENTITY_MODE=counter`, where a request may legitimately carry no
+ * customer at all — see the note on that setting in `platform/config.ts`.
+ *
+ * Deliberately a SEPARATE function rather than a flag on `customerOf`. That
+ * one throws, and every existing caller depends on it throwing; a parameter
+ * that turns the throw off would put the decision at hundreds of call sites,
+ * where the wrong default is invisible. A caller that can handle an anonymous
+ * request has to say so by name.
+ */
+export function maybeCustomerOf(req: RequestWithCustomer): CustomerPrincipal | null {
+  return req[CUSTOMER] ?? null;
+}
+
 export function customerOf(req: RequestWithCustomer): CustomerPrincipal {
   const p = req[CUSTOMER];
   if (!p) throw new AppError('TOKEN_INVALID', 'Verify your mobile number to continue.');

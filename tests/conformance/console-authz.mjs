@@ -31,7 +31,7 @@
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, join, relative } from 'node:path';
+import { dirname, resolve, join, relative, sep } from 'node:path';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -47,9 +47,41 @@ const STAFF_CONTROLLERS = [
   'src/console/console.controller.ts',
   'src/console/court.controller.ts',
   'src/console/vendor.controller.ts',
+  /*
+   * Not in src/console, and it belongs here more than most things that are.
+   *
+   * The till takes money on a card machine. It is staff-credentialed, it acts
+   * on somebody else's order by design, and "everyone signed in can call it"
+   * would mean any cook in the court can debit any customer's card. The
+   * directory sweep below only walks src/console, so this one is held by being
+   * named — which is exactly the weakness that sweep exists to cover, and the
+   * reason this comment says so out loud.
+   */
+  'src/payments/pos.controller.ts',
 ];
 
 const METHOD = /@(Get|Post|Patch|Put|Delete)\(/;
+
+/**
+ * What counts as authorising.
+ *
+ * `decide` returns a decision the caller inspects; `requirePermission` throws
+ * on refusal and logs a cross-tenant attempt. Both are real authorisation
+ * against the RBAC matrix, and both are exported from rbac.ts for callers to
+ * choose between — so a check that recognised only one would fail a controller
+ * for picking the stricter primitive.
+ */
+const AUTHORISES = /\b(?:decide|requirePermission)\s*\(/;
+
+/**
+ * Where one class member ends and the next begins.
+ *
+ * Used to stop the helper-detection window from running out of the method it
+ * is examining and into the one below it. Two-space indentation because that is
+ * what this codebase is formatted to, and a decorator counts as the start of a
+ * member because route handlers begin with one.
+ */
+const MEMBER = /\n {2}(?:private|public|protected|@[A-Z])/g;
 
 /**
  * Split a controller into handlers.
@@ -113,13 +145,38 @@ for (const rel of STAFF_CONTROLLERS) {
   const helpers = new Set();
   for (const m of src.matchAll(/private\s+(?:async\s+)?([a-zA-Z]\w*)\s*\([^)]*\)[^{]*\{/g)) {
     const start = m.index ?? 0;
-    // Look ahead a generous but bounded window rather than brace-matching.
-    if (/\bdecide\s*\(/.test(src.slice(start, start + 1400))) helpers.add(m[1]);
+
+    /*
+     * ======================================================================
+     * THE WINDOW STOPS AT THE NEXT MEMBER, AND IT DID NOT USED TO
+     * ======================================================================
+     *
+     * This was a flat 1400-character lookahead — "generous but bounded rather
+     * than brace-matching" — and the generosity was the bug. The window ran
+     * past the end of the method being examined and into the next one, so a
+     * private helper that authorises nothing was recorded as one that does,
+     * purely because an authorising method happened to be declared after it.
+     *
+     * `PosController` is where that surfaced. Its `pos()` narrows the payment
+     * provider and touches no permission; `authorise()` is declared directly
+     * below it. Every handler calling `this.pos()` was reported as authorised
+     * — with `this.pos()` printed as the reason, which is the check stating
+     * the false positive out loud and nobody reading it.
+     *
+     * Those handlers do call `this.authorise(...)` as well, so nothing was
+     * actually unguarded. That is luck, not the check working: a handler that
+     * called only `this.pos()` would have passed identically.
+     */
+    MEMBER.lastIndex = start + 1;
+    const next = MEMBER.exec(src);
+    const end = Math.min(start + 1400, next ? next.index : src.length);
+
+    if (AUTHORISES.test(src.slice(start, end))) helpers.add(m[1]);
   }
 
   for (const h of handlers(src)) {
     checked++;
-    const callsDecide = /\bdecide\s*\(/.test(h.body);
+    const callsDecide = AUTHORISES.test(h.body);
     const callsHelper = [...helpers].some((name) =>
       new RegExp(`this\\.${name}\\s*\\(`).test(h.body),
     );
@@ -151,9 +208,13 @@ console.log('\nnegative control — the check must be able to fail');
 console.log('─'.repeat(78));
 
 const sample = readFileSync(resolve(root, 'src/console/vendor.controller.ts'), 'utf8');
-const sabotaged = sample.replace(/\bdecide\s*\(/g, 'noop(').replace(/this\.authorise\s*\(/g, 'noop(');
+const sabotaged = sample
+  .replace(/\b(?:decide|requirePermission)\s*\(/g, 'noop(')
+  .replace(/this\.authorise\s*\(/g, 'noop(');
 
-const stillDetected = handlers(sabotaged).filter((h) => /\bdecide\s*\(|this\.authorise\s*\(/.test(h.body));
+const stillDetected = handlers(sabotaged).filter(
+  (h) => AUTHORISES.test(h.body) || /this\.authorise\s*\(/.test(h.body),
+);
 checked++;
 if (stillDetected.length === 0) {
   console.log('  ok    with authorisation removed, 0 handlers pass — the check has teeth');
@@ -188,7 +249,15 @@ console.log('─'.repeat(78));
 
 const present = readdirSync(resolve(root, 'src/console'))
   .filter((f) => f.endsWith('.controller.ts'))
-  .map((f) => join('src/console', f));
+  /*
+   * POSIX separators, because STAFF_CONTROLLERS is written with them.
+   *
+   * `path.join` yields backslashes on Windows, so `includes` never matched and
+   * every console controller was reported as unscanned — in the same run that
+   * had just reported each of them as scanned. A check that contradicts itself
+   * is one nobody trusts, which is how it ends up switched off.
+   */
+  .map((f) => join('src/console', f).split(sep).join('/'));
 
 const unscanned = present.filter((f) => !STAFF_CONTROLLERS.includes(f));
 checked++;

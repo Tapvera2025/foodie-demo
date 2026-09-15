@@ -215,7 +215,7 @@ A guard proves *who*; `decide()` in `src/identity/rbac.ts` decides *what they
 may do*. A guard that also authorises comes to mean "signed in", and then
 everyone signed in gets everything.
 
-**31 permissions × 9 roles** in one matrix (`src/identity/permissions.ts`).
+**32 permissions × 9 roles** in one matrix (`src/identity/permissions.ts`).
 `tests/conformance/console-authz.mjs` asserts every console handler calls
 `decide` — and contains a negative control that sabotages a controller in memory
 to prove the check can fail.

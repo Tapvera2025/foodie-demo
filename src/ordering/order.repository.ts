@@ -439,8 +439,29 @@ export class OrderRepository {
        *
        * Stated here as well as at the edge because this method is reachable
        * from scripts and from any future endpoint, and the guard is not.
+       *
+       * ----------------------------------------------------------------------
+       * EXCEPT AT A COUNTER, WHERE THE PERSON IS STANDING IN FRONT OF YOU
+       * ----------------------------------------------------------------------
+       *
+       * `ORDER_IDENTITY_MODE=counter` is for a court with no internet, where an
+       * OTP cannot be delivered by any channel that exists. Read the three
+       * costs listed above against that setting and each is already answered:
+       * the customer is told their number by a screen they are standing at,
+       * identified by being there with a card, and refunded to that card on the
+       * same terminal that took the money.
+       *
+       * The mode is refused at boot unless payments settle at a POS terminal,
+       * so reaching this branch means there IS a counter. And an order written
+       * here is `CREATED`: no kitchen board shows it until a cashier has been
+       * paid, so a NULL customer never becomes food.
+       *
+       * Read from config rather than passed in, deliberately. This check exists
+       * because the method is reachable from scripts and future endpoints that
+       * the guard does not cover — a caller-supplied flag would let exactly
+       * those callers opt themselves out of it.
        */
-      if (session.customer_id === null) {
+      if (session.customer_id === null && config().ORDER_IDENTITY_MODE !== 'counter') {
         throw new AppError(
           'TOKEN_INVALID',
           'This order has no verified customer. Verify a mobile number before ordering.',

@@ -8,8 +8,19 @@ import { Body, Controller, Get, Headers, Inject, Param, Post, Req, UseGuards } f
 import type { Kysely } from 'kysely';
 import { z } from 'zod';
 
-import { CustomerGuard, customerOf, type RequestWithCustomer } from '../identity/customer.guard.js';
-import { SessionGuard, sessionOf, type RequestWithSession } from '../identity/session.guard.js';
+import {
+  CustomerGuard,
+  customerOf,
+  maybeCustomerOf,
+  type RequestWithCustomer,
+} from '../identity/customer.guard.js';
+import { OrderIdentityGuard } from '../identity/order-identity.guard.js';
+import {
+  optionalSessionPrincipal,
+  SessionGuard,
+  sessionOf,
+  type RequestWithSession,
+} from '../identity/session.guard.js';
 import { currentCorrelationId } from '../platform/correlation.js';
 import { DB } from '../platform/database.module.js';
 import { AppError } from '../platform/errors.js';
@@ -65,7 +76,7 @@ export class OrderController {
    * eventually disagree with the invoice.
    */
   @Post('checkout/validate')
-  @UseGuards(SessionGuard, CustomerGuard)
+  @UseGuards(SessionGuard, OrderIdentityGuard)
   async validate(@Body() body: unknown, @Req() req: CustomerRequest): Promise<unknown> {
     const input = PlaceOrderBody.parse(body);
     const { sessionId } = await this.sessionForCustomer(req);
@@ -92,7 +103,15 @@ export class OrderController {
    */
   private async sessionForCustomer(req: CustomerRequest): Promise<{ sessionId: string }> {
     const { sessionId } = sessionOf(req);
-    const { customerId } = customerOf(req);
+
+    /*
+     * NULL under ORDER_IDENTITY_MODE=counter, and only there.
+     *
+     * `OrderIdentityGuard` lets a request with no credential through in that
+     * mode; in `otp` mode it has already refused one, so this cannot be null
+     * and the checks below run exactly as they always did.
+     */
+    const customer = maybeCustomerOf(req);
 
     const session = await this.db
       .selectFrom('app_session')
@@ -103,6 +122,31 @@ export class OrderController {
     if (!session || session.expires_at.getTime() <= Date.now()) {
       throw new AppError('SESSION_EXPIRED', 'This session has expired. Rescan the QR code.');
     }
+
+    /*
+     * AN ANONYMOUS CALLER MAY NOT TOUCH A SESSION SOMEBODY HAS VERIFIED.
+     *
+     * Counter mode relaxes who may order, never whose order they may join. A
+     * session that already has a customer attached belongs to that person —
+     * they verified on this device — and a later request with no credential is
+     * either the phone changing hands or somebody replaying a session token.
+     *
+     * Without this, counter mode would be a way to ORDER AS someone else on any
+     * session whose token leaked, which is a strictly worse hole than the one
+     * the mode is opening on purpose. The anonymous path is for a session that
+     * has never been verified, and stays that way.
+     */
+    if (customer === null) {
+      if (session.customer_id !== null) {
+        throw new AppError(
+          'TOKEN_INVALID',
+          'This table has already been verified by a customer. Sign in to continue.',
+        );
+      }
+      return { sessionId };
+    }
+
+    const { customerId } = customer;
 
     if (session.customer_id !== null && session.customer_id !== customerId) {
       // 404-shaped, not 403. Confirming that a session exists and belongs to
@@ -124,7 +168,7 @@ export class OrderController {
   }
 
   @Post('orders')
-  @UseGuards(SessionGuard, CustomerGuard)
+  @UseGuards(SessionGuard, OrderIdentityGuard)
   async place(
     @Body() body: unknown,
     @Req() req: CustomerRequest,
@@ -195,12 +239,15 @@ export class OrderController {
    * failure mode is showing a stranger what you had for lunch.
    */
   @Get('sessions/:sessionId/orders')
-  @UseGuards(SessionGuard, CustomerGuard)
+  @UseGuards(SessionGuard, OrderIdentityGuard)
   async sessionOrders(
     @Param('sessionId') sessionId: string,
     @Req() req: CustomerRequest,
   ): Promise<unknown> {
-    const { customerId } = customerOf(req);
+    /*
+     * NULL only under ORDER_IDENTITY_MODE=counter — see `sessionForCustomer`.
+     */
+    const customer = maybeCustomerOf(req);
 
     // The path parameter is not a credential. It must agree with the session
     // this client actually holds, or the request is asking about somebody
@@ -213,10 +260,21 @@ export class OrderController {
     const rows = await this.db
       .selectFrom('order')
       .innerJoin('vendor', 'vendor.id', 'order.vendor_id')
-      // Ownership, not just session scope. Two customers can no longer share a
-      // session, but an order list is exactly the wrong place to rely on that
-      // being true somewhere else.
-      .where('order.customer_id', '=', customerId)
+      /*
+       * Ownership AND session scope, when there is an owner to check.
+       *
+       * Two customers can no longer share a session, but an order list is
+       * exactly the wrong place to rely on that being true somewhere else.
+       *
+       * An anonymous counter caller has no customer id to filter on, so the
+       * session scope below carries the whole check. That is sound only
+       * because `sessionForCustomer` refuses an anonymous request on a session
+       * that HAS a customer: a session is therefore either verified — in which
+       * case this branch is unreachable — or anonymous throughout, and its
+       * orders are all the same person's. If that refusal is ever relaxed,
+       * this listing starts showing one diner another's lunch.
+       */
+      .$if(customer !== null, (qb) => qb.where('order.customer_id', '=', customer!.customerId))
       .select([
         'order.id as orderId',
         'order.public_order_number as orderNumber',
@@ -327,17 +385,52 @@ export class OrderController {
     });
   }
 
+  /*
+   * `OrderIdentityGuard`, and in `otp` mode that IS `CustomerGuard` — this
+   * route is unchanged for any deployment on the public internet.
+   *
+   * WHY `SessionGuard` IS NOT LISTED HERE
+   *
+   * It is the obvious way to give the anonymous branch below something to scope
+   * by, and it would break the ordinary case. `SessionGuard` throws when a
+   * session has expired, and a session outlives its orders by no guarantee at
+   * all — the KDS board carries a note about a ticket losing its customer's
+   * name for exactly this reason. Adding it would mean a verified customer
+   * whose session lapsed while their food cooked can no longer watch it cook.
+   *
+   * So the session is resolved INSIDE the anonymous branch, where its absence
+   * is a real error, instead of being demanded from everybody.
+   */
   @Get('orders/:orderId')
-  @UseGuards(CustomerGuard)
+  @UseGuards(OrderIdentityGuard)
   async track(@Param('orderId') orderId: string, @Req() req: CustomerRequest): Promise<unknown> {
-    const { customerId } = customerOf(req);
+    const customer = maybeCustomerOf(req);
+
+    /*
+     * One scope or the other, never neither.
+     *
+     * A verified customer is scoped by who they are. An anonymous one — only
+     * possible under `ORDER_IDENTITY_MODE=counter` — is scoped by the session
+     * that placed the order, which is the only thing they hold. Both are
+     * applied IN the query rather than checked after it: a read that fetches
+     * the row and then decides is one refactor away from returning it.
+     */
+    let scope: { column: 'order.customer_id' | 'order.app_session_id'; value: string };
+
+    if (customer !== null) {
+      scope = { column: 'order.customer_id', value: customer.customerId };
+    } else {
+      const session = await optionalSessionPrincipal(req);
+      if (!session) {
+        throw new AppError('SESSION_EXPIRED', 'Scan the code again to start a session.');
+      }
+      scope = { column: 'order.app_session_id', value: session.sessionId };
+    }
 
     const order = await this.db
       .selectFrom('order')
       .innerJoin('vendor', 'vendor.id', 'order.vendor_id')
-      // Scoped in the query rather than checked after it. A read that fetches
-      // the row and then decides is one refactor away from returning it.
-      .where('order.customer_id', '=', customerId)
+      .where(scope.column, '=', scope.value)
       .select([
         'order.id',
         'order.public_order_number',

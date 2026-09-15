@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { api } from '../lib/api';
 import { cashfreeSession, startCheckout, CashfreeLoadError } from '../lib/cashfree';
+import { payAtCounter } from '../lib/counter';
 import { formatINR } from '../lib/money';
 import { useCart } from '../lib/cart';
 import { Card, ErrorState, FoodTile, Screen, Spinner } from './ui';
@@ -340,6 +341,26 @@ export function Pay() {
           fired.current = false;
           setHandoffStartedAt(null);
         });
+      return;
+    }
+
+    /*
+     * PAY AT THE COUNTER: no handoff, and above all no simulation.
+     *
+     * Checked before the DEV branch for the same reason the aggregator is —
+     * forging a payment here would confirm an order that nobody has actually
+     * paid for, on the one provider where a real card is about to be charged
+     * a few metres away. It would also refuse: the server only simulates
+     * against the stub.
+     *
+     * Nothing fires. The status poll is already running and it is what notices
+     * when the cashier taps Charge — the same path as a customer coming back
+     * from a UPI app, which is why this screen needs no special case beyond
+     * not acting.
+     */
+    if (payAtCounter(intent.data?.checkoutPayload)) {
+      fired.current = false;
+      setHandoffStartedAt(null);
       return;
     }
 
@@ -901,9 +922,19 @@ export function Pay() {
     );
   }
 
+  /*
+   * No handoff exists for this provider — the till performs the payment. Read
+   * from the intent rather than from config, so this screen needs to know
+   * nothing about how the venue is deployed.
+   */
+  const atCounter = payAtCounter(intent.data?.checkoutPayload);
+
   // ---------------------------------------------------------------- waiting
   return (
-    <Screen title="Payment" subtitle="Do not close this page">
+    <Screen
+      title="Payment"
+      subtitle={atCounter ? 'Pay at the counter' : 'Do not close this page'}
+    >
       <Card className="p-7 text-center mb-4">
         <p className="eyebrow text-[11px] text-ink-500">Amount to pay</p>
         <p className="display text-[44px] text-ink-900 tnum mt-2">
@@ -911,7 +942,43 @@ export function Pay() {
         </p>
       </Card>
 
-      {noProvider ? (
+      {/*
+        PAY AT THE COUNTER.
+
+        Nothing is loading and nothing is about to happen on this phone, so the
+        screen must not look like it is waiting on the customer — the default
+        branch below says "checking with the bank", which here would be a lie
+        about a payment nobody has attempted yet.
+
+        The order NUMBER is the whole panel. It is what the cashier types to
+        find the order, and it is the only thing the customer has to carry to
+        the till. The status poll keeps running underneath, so the moment the
+        card is charged this screen advances on its own.
+      */}
+      {atCounter ? (
+        <Card className="p-6 mb-4 text-center">
+          <p className="text-[17px] font-bold text-ink-900">Pay at the counter</p>
+          <p className="text-[14px] text-ink-500 mt-2 leading-relaxed">
+            Nothing has been charged yet. Show this number at the counter and pay there — this
+            screen updates by itself once the card goes through.
+          </p>
+
+          {order.data ? (
+            <div className="mt-6 rounded-card bg-surface px-6 py-5">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-ink-400">
+                Your order number
+              </p>
+              <p className="text-[44px] leading-none font-black text-ink-900 tnum mt-1.5 tracking-tight">
+                {order.data.orderNumber}
+              </p>
+              <p className="text-[13px] text-ink-500 mt-3 leading-relaxed">
+                <span className="font-semibold text-ink-700">{order.data.vendorName}</span> starts
+                cooking once the payment is confirmed.
+              </p>
+            </div>
+          ) : null}
+        </Card>
+      ) : noProvider ? (
         <Card className="p-5 mb-4 border-2 border-warn-500">
           <p className="text-[17px] font-bold text-ink-900">Payments are not switched on yet</p>
           <p className="text-[14px] text-ink-500 mt-2 leading-relaxed">

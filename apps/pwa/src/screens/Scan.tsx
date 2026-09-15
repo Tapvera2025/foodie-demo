@@ -31,6 +31,8 @@ export function Scan() {
       sessionToken: q.data.sessionToken,
       foodCourtId: q.data.foodCourt.id,
       foodCourtName: q.data.foodCourt.name,
+      // Absent from an older server's response, which means `otp`.
+      identityMode: q.data.identityMode ?? 'otp',
     });
     navigate('/court', { replace: true });
   }, [q.data, startSession, navigate]);
