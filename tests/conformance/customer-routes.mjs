@@ -175,18 +175,36 @@ for (let i = 0; i < propStarts.length; i++) {
 }
 
 /*
- * Seven guarded routes exist and the client is expected to reach most of them.
- * A floor rather than an exact number — the point is to fail loudly if the
- * slicing regresses to matching almost nothing, not to require an edit here
- * every time an endpoint is added.
+ * A floor, so this fails loudly if the slicing above regresses to matching
+ * almost nothing — not an exact number, which would need an edit here every
+ * time an endpoint is added.
+ *
+ * IT USED TO BE THE CONSTANT 5, AND THAT WAS COUPLED TO SOMETHING INVISIBLE
+ *
+ * The 5 was calibrated against "seven guarded routes exist", written in a
+ * comment and enforced nowhere. When `ORDER_IDENTITY_MODE=counter` moved four
+ * of those seven onto `OrderIdentityGuard` — deliberately, so an islanded
+ * court can take an order without an OTP — three were left, the client still
+ * reached every one of them, and this check failed reporting that "the api.ts
+ * parser is dropping methods".
+ *
+ * The parser was fine. The check was measuring the guarded route COUNT while
+ * claiming to measure parser health, and it pointed the person reading it at
+ * the wrong file entirely. Derived from `guarded` now, so it scales with
+ * whatever the guard set happens to be and only fails when the client really
+ * has stopped reaching it.
  */
 checked++;
-const enough = needsToken.size >= 5;
+const floor = Math.max(2, Math.ceil(guarded.length * 0.6));
+const enough = needsToken.size >= floor;
 if (!enough) failures++;
 console.log(
   `  ${enough ? 'ok  ' : 'FAIL'}  ${needsToken.size} api methods hit one of the ${guarded.length}` +
     ` guarded routes: ${[...needsToken].sort().join(', ')}` +
-    (enough ? '' : '\n        too few — the api.ts parser is dropping methods'),
+    (enough
+      ? ''
+      : `\n        too few — expected at least ${floor} of ${guarded.length} guarded routes to be` +
+        '\n        reached from api.ts. The parser is dropping methods.'),
 );
 
 checked++;

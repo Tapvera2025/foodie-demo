@@ -14,6 +14,7 @@ import { config } from '../platform/config.js';
 import { DB } from '../platform/database.module.js';
 import type { Database } from '../platform/schema.js';
 import { PaymentController } from './payment.controller.js';
+import { PosController } from './pos.controller.js';
 import { PAYMENT_ENGINE, PAYMENT_PROVIDER } from './payment.tokens.js';
 import { PaymentRepository } from './payment.repository.js';
 import type { PaymentProvider } from './provider.interface.js';
@@ -54,7 +55,18 @@ const engineFactory: Provider = {
 };
 
 @Module({
-  controllers: [PaymentController],
+  /*
+   * `PosController` is mounted unconditionally, on every deployment, including
+   * the ones paying through Cashfree.
+   *
+   * Mounting it conditionally would be tidier and is the wrong trade. A route
+   * that exists only under one configuration is a route that is never exercised
+   * under the others, and the first time anyone discovers it is missing is when
+   * a till returns 404 with a queue at the counter. Mounted always, it answers
+   * every caller with the sentence in `PosController.pos()` naming the
+   * configuration it needs — which is a diagnosis rather than a mystery.
+   */
+  controllers: [PaymentController, PosController],
   providers: [providerFactory, engineFactory],
   exports: [PAYMENT_ENGINE, PAYMENT_PROVIDER],
 })

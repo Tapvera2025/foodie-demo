@@ -20,6 +20,16 @@
     -->
     <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)" />
+    <!--
+      iOS ignores the web manifest's icons when adding to the Home Screen and
+      reads this link instead. `includeAssets` in vite.config.ts copies the
+      file into the build; only the link has to live here.
+
+      It matters more than an icon usually would: Web Push on iOS Safari works
+      ONLY from a home-screen install, so this is the first link in that chain
+      — see `pushViability()` in docs/tech/frontend.md.
+    -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Order · Food Court</title>
   </head>
   <body>

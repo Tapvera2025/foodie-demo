@@ -131,11 +131,36 @@ const guard = pay.slice(pay.indexOf('const awaitingHandoff ='), pay.indexOf(';',
     );
   }
 
+  /*
+   * WHERE THE PANEL CHAIN STARTS, DERIVED — IT USED TO BE THE LITERAL
+   * '{noProvider ?'.
+   *
+   * That named whichever branch happened to be first, and the panels are one
+   * ternary chain whose order is a rendering decision, not a contract. Adding a
+   * pay-at-counter panel ahead of it made `indexOf` return -1, so the
+   * comparison became "is the early return before position -1" — false, and
+   * reported as the ordering having inverted. It had not. Nothing about the
+   * early return had changed at all.
+   *
+   * A check that names one branch of a chain fails whenever the chain grows,
+   * and it fails with a message pointing at the wrong thing. Derived from the
+   * same `flags` the assertions above use, so it follows the chain wherever it
+   * starts.
+   */
+  const panelAt = flags
+    .map((f) => {
+      const m = pay.match(new RegExp(`[{:]\\s*${f}\\s*\\?`));
+      return m?.index ?? Infinity;
+    })
+    .reduce((a, b) => Math.min(a, b), Infinity);
+
   check(
     'the early return really does come before those panels',
-    pay.indexOf('if (awaitingHandoff') < pay.indexOf('{noProvider ?'),
-    'if the ordering ever inverts, this whole file is checking the wrong thing — ' +
-      're-read it rather than trusting it',
+    panelAt !== Infinity && pay.indexOf('if (awaitingHandoff') < panelAt,
+    panelAt === Infinity
+      ? 'no panel for any derived flag was found in the render — the derivation broke'
+      : 'if the ordering ever inverts, this whole file is checking the wrong thing — ' +
+        're-read it rather than trusting it',
   );
 }
 

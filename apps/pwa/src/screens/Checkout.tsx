@@ -5,6 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { ApiError } from '../lib/api';
 import { cashfreeSession } from '../lib/cashfree';
+import { payAtCounter } from '../lib/counter';
 import { formatINR } from '../lib/money';
 import { useCart } from '../lib/cart';
 import { Card, ErrorState, FoodTile, Spinner } from './ui';
@@ -175,14 +176,40 @@ export function Checkout() {
        */
       const session = cashfreeSession(intent.checkoutPayload);
 
-      if (!session && import.meta.env.DEV) {
+      /*
+       * ====================================================================
+       * A THIRD CASE THIS BRANCH DID NOT KNOW ABOUT
+       * ====================================================================
+       *
+       * The comment above splits the world in two — a real aggregator handed
+       * back a session, or there is nothing real and a dev build may forge
+       * one. `PAYMENTS_PROVIDER=pos` is neither. It returns no session,
+       * because there is nothing on the phone to hand off to, and it must not
+       * be simulated, because a cashier is about to charge the card for real.
+       *
+       * Left unhandled, a development build fell straight through to
+       * `simulatePayment` and the server refused it exactly as designed:
+       *
+       *     RECONCILIATION_REQUIRED
+       *     "Payment simulation only works against the stub provider."
+       *
+       * The customer saw "Something went wrong" on a checkout that had in fact
+       * succeeded — the order was placed and the intent was open, waiting at a
+       * till. The one failure this flow is written to avoid.
+       *
+       * Read off the response rather than the config, for the reason the note
+       * above gives: the intent already says what kind of payment this is.
+       */
+      const atCounter = payAtCounter(intent.checkoutPayload);
+
+      if (!session && !atCounter && import.meta.env.DEV) {
         // Stands in for the provider, not for the customer. It forges an event
         // through the REAL ingestion path, so the server still learns the
         // outcome the only way it ever does: from a verified provider event.
         await api.simulatePayment(order.orderId);
       }
 
-      return { ...order, handedOff: session !== null };
+      return { ...order, handedOff: session !== null, atCounter };
     },
 
     /*
@@ -254,7 +281,20 @@ export function Checkout() {
        * one second ago" is exactly the thing being expressed, and it should
        * be forgotten as soon as it stops being true.
        */
-      navigate(order.handedOff ? `/pay/${order.orderId}` : `/order/${order.orderId}`, {
+      /*
+       * The Pay screen is where a counter customer belongs too.
+       *
+       * Not because anything is handed off — nothing is — but because that
+       * screen holds the order number, the amount and the status poll that
+       * notices when the cashier has charged the card. Sending them to
+       * `/order/:id` instead would show a tracking rail for an order that has
+       * not been paid for, with no instruction about the walk to the till.
+       *
+       * `autoStart` stays off: there is no sheet to open.
+       */
+      const payScreen = order.handedOff || order.atCounter;
+
+      navigate(payScreen ? `/pay/${order.orderId}` : `/order/${order.orderId}`, {
         replace: true,
         state: order.handedOff ? { autoStart: true } : undefined,
       });

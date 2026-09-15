@@ -12,6 +12,13 @@ const boolFromString = z.enum(['true', 'false']).transform((v) => v === 'true');
 const intFromString = (min: number, max: number): z.ZodNumber =>
   z.coerce.number().int().min(min).max(max);
 
+/**
+ * Exported so `scripts/seed-dev.ts` can print the same URL this server would
+ * generate. The seed's scan link and an issued QR pointing at different hosts
+ * is a confusing half-hour for whoever is trying the product for the first time.
+ */
+export const DEFAULT_PWA_BASE_URL = 'http://localhost:5173';
+
 export const ConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: intFromString(1, 65535).default(3000),
@@ -19,6 +26,56 @@ export const ConfigSchema = z.object({
 
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
+
+  /**
+   * WHERE A PHONE GOES WHEN IT SCANS A TABLE QR.
+   *
+   * This string is printed onto physical posters. Every other value in this
+   * file can be corrected with a redeploy; this one cannot, because the
+   * correction has to be carried to every table in the court on a new
+   * laminated card.
+   *
+   * IT USED TO BYPASS THIS SCHEMA, AND THE REASON GIVEN DOES NOT HOLD
+   *
+   * It was read straight from `process.env` in `court.controller.ts`, on the
+   * grounds that it is "a property of the DEPLOYMENT, not of the API". So is
+   * `DATABASE_URL`. So is every line above and below it — that is what this
+   * file is for. Reading it through the schema does not make it shared between
+   * deployments; it only means a typo is caught at boot rather than encoded
+   * into a QR symbol and screwed to a table.
+   *
+   * The least reversible value in the product was the only one nothing checked.
+   *
+   * `loadConfig` additionally refuses a loopback host in production, and
+   * `buildQrUrl` rejects a base too long to encode at a scannable density.
+   */
+  PWA_BASE_URL: z
+    .string()
+    .url()
+    /**
+     * `.url()` ALONE ACCEPTS `localhost:5173`, WHICH IS THE LIKELIEST TYPO.
+     *
+     * It defers to the WHATWG parser, which reads that as a URL whose SCHEME
+     * is `localhost:` and whose path is `5173` — structurally valid, so the
+     * check passes. Its `hostname` is then the empty string, so the
+     * loopback refusal in `loadConfig` does not recognise it either, and a QR
+     * encoding `localhost:5173/t/<token>` goes to the printer.
+     *
+     * Dropping the scheme is the single most natural way to write this value
+     * wrongly. Requiring http or https makes both checks below mean something.
+     */
+    .refine(
+      (v) => {
+        try {
+          const { protocol } = new URL(v);
+          return protocol === 'http:' || protocol === 'https:';
+        } catch {
+          return false;
+        }
+      },
+      { message: 'must be an http(s) origin — a bare "host:port" is not one' },
+    )
+    .default(DEFAULT_PWA_BASE_URL),
 
   /**
    * THIS FIELD HAS NO DEFAULT, DELIBERATELY.
@@ -68,8 +125,57 @@ export const ConfigSchema = z.object({
   TAX_FEE_GST_BPS: intFromString(0, 10000).default(1800),
 
   PAYMENTS_PROVIDER: z
-    .enum(['cashfree', 'razorpay-route', 'vendor-direct', 'stub'])
+    .enum(['cashfree', 'razorpay-route', 'vendor-direct', 'stub', 'pos'])
     .default('stub'),
+
+  /**
+   * ==========================================================================
+   * POS — A CARD MACHINE ON THE INTRANET
+   * ==========================================================================
+   *
+   * For a court whose LAN has no route to the internet. The terminal carries
+   * its own connectivity to the acquiring bank, so this process talks only to a
+   * device on the local network. See `src/payments/providers/pos.provider.ts`.
+   *
+   * All optional, because a deployment on `cashfree` or `stub` must not have to
+   * set them. `buildPaymentProvider` refuses at BOOT when `PAYMENTS_PROVIDER`
+   * is `pos` and the required ones are missing — the same rule Cashfree
+   * already follows, and for the same reason: a missing address discovered
+   * when a cashier presses Charge is a customer standing at a counter.
+   */
+  POS_TERMINAL_KIND: z.enum(['lan', 'mock']).default('lan'),
+
+  /** The terminal's fixed address on the intranet. Give the machine a DHCP reservation. */
+  POS_TERMINAL_HOST: z.string().min(1).optional(),
+  POS_TERMINAL_PORT: intFromString(1, 65535).default(8080),
+
+  /** Issued by the terminal vendor at onboarding. Identifies this till. */
+  POS_TERMINAL_ID: z.string().min(1).optional(),
+  POS_MERCHANT_ID: z.string().min(1).optional(),
+
+  /**
+   * Set this to `true` only after the request and response field names in
+   * `lan.terminal.ts` have been checked against your terminal vendor's
+   * integration guide.
+   *
+   * It defaults to false and the adapter refuses to start in production
+   * without it. The failure it guards against is quiet: a malformed request
+   * comes back as an error body inside an HTTP 200, which reads as a decline —
+   * so a wrong field name looks exactly like a customer's card being refused,
+   * for every customer, for ever.
+   */
+  POS_TERMINAL_WIRE_VERIFIED: boolFromString.default('false'),
+
+  /**
+   * Whose account the terminal deposits into.
+   *
+   * PLATFORM_COLLECT for one machine at a central counter — the usual food
+   * court arrangement, and the only one where the platform can reverse
+   * anything. VENDOR_DIRECT if each stall has its own machine on its own
+   * merchant account, in which case the platform never touches the money and
+   * every refund is advisory by construction.
+   */
+  POS_SETTLEMENT_MODE: z.enum(['PLATFORM_COLLECT', 'VENDOR_DIRECT']).default('PLATFORM_COLLECT'),
 
   /**
    * ==========================================================================
@@ -163,6 +269,45 @@ export const ConfigSchema = z.object({
    * DLT registration completes — PRD §19 decision 1, the item that blocks
    * orders entirely. It refuses to run in production; see src/identity/otp.ts.
    */
+  /**
+   * ==========================================================================
+   * WHAT PROVES A CUSTOMER IS A CUSTOMER, BEFORE THEY MAY ORDER
+   * ==========================================================================
+   *
+   * `otp` — the default, and the only safe setting for a court on the public
+   * internet. Browsing is anonymous; ordering requires a verified mobile
+   * number (PRD §11.2, DR-0001).
+   *
+   * `counter` — for a court with no route to the internet, where an OTP
+   * cannot be delivered at all. Every channel that carries one needs the
+   * internet: SMS and WhatsApp by definition, and there is no third. On an
+   * islanded LAN the OTP gate does not degrade — it closes, and with it every
+   * path to placing an order.
+   *
+   * WHAT REPLACES THE OTP, AND WHY IT IS NOT WEAKER
+   *
+   * The customer walks to a counter and hands a card to a cashier. Physical
+   * presence plus an authorised card is stronger evidence of who is buying
+   * than a code sent to a number that was typed in thirty seconds earlier —
+   * and unlike the code, it cannot be phished from another building.
+   *
+   * The invariant in `order.repository.ts` names what a NULL customer costs:
+   * no phone to notify, no identity at the counter, no refund route. At a
+   * counter all three are answered by the card and the person holding it —
+   * they are told their number is ready by a screen they are standing at, they
+   * are identified by being there, and a refund goes back to the card that
+   * paid.
+   *
+   * WHAT IT IS NOT
+   *
+   * It does not disable the OTP. A customer who verifies anyway is still bound
+   * to their session, still gets their name on the kitchen ticket, and still
+   * gets notified. `counter` makes verification OPTIONAL, not absent.
+   *
+   * `loadConfig` refuses this mode unless payments settle at a POS terminal.
+   */
+  ORDER_IDENTITY_MODE: z.enum(['otp', 'counter']).default('otp'),
+
   OTP_CHANNEL: z.enum(['console', 'sms', 'whatsapp']).default('console'),
   OTP_TTL_SECONDS: intFromString(30, 900).default(300),
   OTP_MAX_VERIFY_ATTEMPTS: intFromString(1, 10).default(5),
@@ -383,6 +528,51 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (missing.length > 0) {
       throw new ConfigError([`SYNC_MODE=edge requires: ${missing.join(', ')}`]);
     }
+  }
+
+  /*
+   * A QR poster pointing at the machine that printed it.
+   *
+   * `buildQrUrl` already rejects a base too long to encode at a scannable
+   * density, so the SHAPE of this value is checked. What nothing checks is
+   * whether the host means anything to somebody else's phone — and
+   * `localhost:5173` yields a perfectly valid, perfectly scannable URL that
+   * resolves, for every customer in the building, to nothing.
+   *
+   * Refused at boot rather than at issuance because this failure outlives the
+   * process. A wrong provider key is found at the first payment and fixed
+   * before the second; a wrong QR base is found after the posters come back
+   * from the laminator.
+   */
+  if (cfg.NODE_ENV === 'production') {
+    const host = new URL(cfg.PWA_BASE_URL).hostname;
+    if (['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'].includes(host)) {
+      throw new ConfigError([
+        `PWA_BASE_URL is ${cfg.PWA_BASE_URL} in production. Table QR codes are generated from ` +
+          "it and printed, so this puts the address of this server's own loopback onto every " +
+          "poster in the court. Set it to an origin a customer's phone can reach.",
+      ]);
+    }
+  }
+
+  /*
+   * COUNTER IDENTITY WITHOUT A COUNTER IS JUST ANONYMOUS ORDERING.
+   *
+   * The whole argument for dropping the OTP is that a cashier and a card
+   * machine stand between an order and its food. Point the same setting at a
+   * remote aggregator and there is no cashier, nobody is present, and the
+   * product has simply stopped asking who is buying.
+   *
+   * The two settings live in different sections of this file and would
+   * otherwise be related only by a paragraph of prose that nothing enforces.
+   */
+  if (cfg.ORDER_IDENTITY_MODE === 'counter' && cfg.PAYMENTS_PROVIDER !== 'pos') {
+    throw new ConfigError([
+      `ORDER_IDENTITY_MODE=counter requires PAYMENTS_PROVIDER=pos, but it is ` +
+        `'${cfg.PAYMENTS_PROVIDER}'. Counter identity replaces the OTP with a cashier and a ` +
+        'card machine; without one, it removes the check on who is ordering and puts nothing ' +
+        'in its place.',
+    ]);
   }
 
   return cfg;

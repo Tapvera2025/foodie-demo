@@ -38,6 +38,7 @@ import { z } from 'zod';
 
 import { decide, type RoleAssignment } from '../identity/rbac.js';
 import { StaffGuard, staffOf, type RequestWithStaff } from '../identity/staff.guard.js';
+import { config } from '../platform/config.js';
 import { DB } from '../platform/database.module.js';
 import { AppError } from '../platform/errors.js';
 import { log } from '../platform/logger.js';
@@ -50,14 +51,20 @@ import { VendorRepository } from './vendor.repository.js';
 /**
  * Where a scanned code lands.
  *
- * Read from the environment rather than the config schema because it is a
- * property of the DEPLOYMENT, not of the API: the same server can be printed
- * onto posters pointing at a staging host and a production one. `seed-dev.ts`
- * reads the same variable with the same default, so a token issued by the seed
- * and one issued here produce identical URLs.
+ * This used to read `process.env` directly, because the value is "a property
+ * of the DEPLOYMENT, not of the API". So is `DATABASE_URL` — that argument
+ * describes every entry in the config schema and excuses none of them from it.
+ * What it actually bought was the one value that gets printed onto physical
+ * signage skipping the only validation this codebase performs at boot.
+ *
+ * It is now `PWA_BASE_URL` in `ConfigSchema`, which rejects a malformed URL
+ * at boot and a loopback host in production. `seed-dev.ts` shares the default
+ * through `DEFAULT_PWA_BASE_URL`, so a token issued by the seed and one issued
+ * here still produce identical URLs — now by construction rather than by two
+ * string literals that happened to match.
  */
 function pwaBaseUrl(): string {
-  return process.env['PWA_BASE_URL'] ?? 'http://localhost:5173';
+  return config().PWA_BASE_URL;
 }
 
 function toAssignment(r: {

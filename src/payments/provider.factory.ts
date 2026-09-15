@@ -36,6 +36,10 @@
 import type { Config } from '../platform/config.js';
 import { CashfreePaymentProvider } from './providers/cashfree.provider.js';
 import { StubPaymentProvider } from './providers/stub.provider.js';
+import { PosPaymentProvider } from './providers/pos.provider.js';
+import { LanTerminal } from './providers/pos/lan.terminal.js';
+import { MockTerminal } from './providers/pos/mock.terminal.js';
+import type { PosTerminal } from './providers/pos/terminal.port.js';
 import type { PaymentProvider } from './provider.interface.js';
 
 export function buildPaymentProvider(cfg: Config): PaymentProvider {
@@ -123,6 +127,67 @@ export function buildPaymentProvider(cfg: Config): PaymentProvider {
         mode: 'PLATFORM_COLLECT',
         secret: cfg.PAYMENTS_WEBHOOK_SECRET,
       });
+
+    case 'pos': {
+      /*
+       * Same boot-time refusal as Cashfree, and the POS version is worse to
+       * discover late: a missing address does not fail at checkout, where the
+       * customer is still holding their phone. It fails at the counter, after
+       * they have walked over, with a cashier who cannot do anything about it.
+       */
+      const missing = (
+        [
+          ['POS_TERMINAL_HOST', cfg.POS_TERMINAL_HOST],
+          ['POS_TERMINAL_ID', cfg.POS_TERMINAL_ID],
+          ['POS_MERCHANT_ID', cfg.POS_MERCHANT_ID],
+        ] as const
+      )
+        .filter(([, v]) => !v)
+        .map(([k]) => k);
+
+      if (cfg.POS_TERMINAL_KIND === 'lan' && missing.length > 0) {
+        throw new Error(
+          `PAYMENTS_PROVIDER=pos with POS_TERMINAL_KIND=lan, but ${missing.join(' and ')} ` +
+            `${missing.length === 1 ? 'is' : 'are'} not set. The terminal needs a fixed ` +
+            'address on the intranet — give the machine a DHCP reservation and set ' +
+            'POS_TERMINAL_HOST to it.',
+        );
+      }
+
+      const terminal: PosTerminal =
+        cfg.POS_TERMINAL_KIND === 'mock'
+          ? (() => {
+              // The mock takes no money. It exists so the counter flow, the
+              // ambiguous-charge path and the reconciliation screen can be
+              // built and chaos-tested without hardware — the same argument
+              // `stub.provider.ts` makes for itself, one layer down.
+              if (cfg.NODE_ENV === 'production') {
+                throw new Error(
+                  'POS_TERMINAL_KIND=mock in production. The mock terminal approves payments ' +
+                    'nobody made, and it does it quietly. Set POS_TERMINAL_KIND=lan and point ' +
+                    'POS_TERMINAL_HOST at the real machine.',
+                );
+              }
+              return new MockTerminal();
+            })()
+          : new LanTerminal({
+              host: cfg.POS_TERMINAL_HOST!,
+              port: cfg.POS_TERMINAL_PORT,
+              terminalId: cfg.POS_TERMINAL_ID!,
+              merchantId: cfg.POS_MERCHANT_ID!,
+              wireFormatVerified: cfg.POS_TERMINAL_WIRE_VERIFIED,
+              nodeEnv: cfg.NODE_ENV,
+            });
+
+      return new PosPaymentProvider({
+        terminal,
+        // The same secret the ingest path verifies with. The POS provider signs
+        // its own events and they re-enter through `verifyAndParseWebhook`, so
+        // that an order can still only be confirmed by `decideWebhookAction`.
+        secret: cfg.PAYMENTS_WEBHOOK_SECRET,
+        mode: cfg.POS_SETTLEMENT_MODE,
+      });
+    }
 
     case 'razorpay-route':
     case 'vendor-direct':

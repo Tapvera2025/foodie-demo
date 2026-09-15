@@ -77,11 +77,22 @@ interface CartState {
    */
   customerName: string | null;
 
+  /**
+   * Whether this court can deliver an OTP. From the scan response.
+   *
+   * Persisted with the session rather than fetched per screen: it is a property
+   * of the venue, it cannot change while a customer stands in it, and the gate
+   * that reads it runs on a route transition where there is no time for a
+   * request.
+   */
+  identityMode: 'otp' | 'counter';
+
   startSession: (s: {
     sessionId: string;
     sessionToken: string;
     foodCourtId: string;
     foodCourtName: string;
+    identityMode: 'otp' | 'counter';
   }) => void;
   setVendor: (id: string, name: string) => void;
   add: (item: {
@@ -106,6 +117,8 @@ export const useCart = create<CartState>()(
     (set, get) => ({
       sessionId: null,
       sessionToken: null,
+      // The strict default, for a client that has not scanned yet.
+      identityMode: 'otp',
       foodCourtId: null,
       foodCourtName: null,
       vendorId: null,

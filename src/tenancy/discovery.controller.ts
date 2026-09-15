@@ -134,6 +134,23 @@ export class DiscoveryController {
       expiresAt: session.expires_at.toISOString(),
       foodCourt: { id: court.id, name: court.name },
       resumed: live !== null,
+      /*
+       * Whether this court can ask for an OTP at all.
+       *
+       * The client cannot infer it and must not assume it: on an islanded
+       * court there is no channel to deliver a code, so gating checkout behind
+       * "verify your number" would be a button that can never succeed.
+       *
+       * Delivered HERE, on the scan, because that is the first thing every
+       * customer does and the only request guaranteed to precede a checkout.
+       * A dedicated settings endpoint would be a second round trip on the
+       * critical path to answer a question this response already knows.
+       *
+       * It is not a permission. The server enforces the mode in
+       * `OrderIdentityGuard`; this only tells the UI which of two true things
+       * to say to the customer.
+       */
+      identityMode: config().ORDER_IDENTITY_MODE,
     };
   }
 

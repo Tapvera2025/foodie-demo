@@ -27,6 +27,14 @@ export const PERMISSIONS = [
   'order.force_cancel',
   'refund.initiate',
   'refund.retry',
+  // Take money on a card machine at the counter. POS deployments only.
+  //
+  // Deliberately NOT folded into `order.collect`, though the same person often
+  // does both within a minute of each other. Handing over a bag of food and
+  // debiting somebody's card are different acts with different consequences
+  // when done wrongly, and one permission for both would mean every cook who
+  // can close a ticket can also charge a stranger's card.
+  'payment.collect',
   // Availability and inventory are different acts on different objects (PRD §6).
   // "We're out of rolls" is a state change anyone on the line can make; setting
   // tomorrow's count of 100 is a planning decision. One permission for both
@@ -158,6 +166,25 @@ export const PERMISSION_MATRIX: Readonly<
   'order.force_cancel': { MANAGER: ALLOW, PLATFORM_OPS: ALLOW },
   'refund.initiate': { MANAGER: ALLOW, PLATFORM_OPS: ALLOW, PLATFORM_FINANCE: ALLOW },
   'refund.retry': { PLATFORM_OPS: ALLOW, PLATFORM_FINANCE: ALLOW },
+
+  /*
+   * NOT `DEVICE`, and that is the whole point of the row.
+   *
+   * A paired kitchen tablet is a machine bolted to a wall in a hot room, shared
+   * by whoever is on shift and signed in to nothing. It emits `acknowledge`
+   * because that is a machine event. Charging a card is not: somebody is
+   * accountable for it, the audit row has to name a person, and a device token
+   * names a tablet.
+   *
+   * Same argument as `inventory.write` one screen down, applied to money.
+   */
+  'payment.collect': {
+    VENDOR_OPERATOR: ALLOW,
+    VENDOR_OWNER: ALLOW,
+    MANAGER: ALLOW,
+    COURT_OPERATOR: ALLOW,
+    PLATFORM_OPS: ALLOW,
+  },
 
   'stock.toggle': { DEVICE: ALLOW, VENDOR_OPERATOR: ALLOW, VENDOR_OWNER: ALLOW },
 
