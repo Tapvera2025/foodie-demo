@@ -39,6 +39,16 @@ function jsonbSafe(table: string, row: Record<string, unknown>): Record<string, 
   return out;
 }
 
+// app_session is edge-local session/auth state and never syncs — an order's
+// app_session_id always points at a row that only exists on the device that
+// created it. The column is nullable with ON DELETE SET NULL for the same
+// reason locally, so clearing it on import is the intended shape, not a
+// workaround.
+function dropForeignSession(row: Record<string, unknown>): Record<string, unknown> {
+  if (row.app_session_id == null) return row;
+  return { ...row, app_session_id: null };
+}
+
 export async function importOrdersBatch(
   db: Kysely<Database>,
   deviceId: string,
@@ -51,11 +61,13 @@ export async function importOrdersBatch(
       const rows = tables[table] as Array<Record<string, unknown>> | undefined;
       if (!rows || rows.length === 0) continue;
 
+      const prepared = rows.map((r) => jsonbSafe(table, table === 'order' ? dropForeignSession(r) : r));
+
       const result = await trx
         .insertInto(table)
         // Rows arrive as plain JSON — dates come back as ISO strings, which
         // pg/Kysely accept for a timestamptz column same as a Date would.
-        .values(rows.map((r) => jsonbSafe(table, r)) as never[])
+        .values(prepared as never[])
         .onConflict((oc) => oc.column('id').doNothing())
         .execute();
 
