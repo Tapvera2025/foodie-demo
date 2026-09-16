@@ -17,6 +17,28 @@ import { WatermarkRepository } from './watermark.repository.js';
 
 const TABLE_ORDER = ['order', 'order_item', 'payment', 'refund'] as const;
 
+// A jsonb column's value arrives from the Ably envelope as an already-parsed
+// object (the whole envelope round-tripped through JSON), but pg needs the
+// literal JSON text for a jsonb bind param — handing it a plain JS object
+// fails with "invalid input syntax for type json". Listed explicitly per
+// table, not "any object", because a future array column (Postgres text[])
+// would need the opposite treatment: a JS array, not a JSON string.
+const JSONB_COLUMNS: Partial<Record<(typeof TABLE_ORDER)[number], string[]>> = {
+  order: ['fee_rule_snapshot', 'tax_model_snapshot'],
+  payment: ['split_instruction', 'checkout_payload'],
+  order_item: ['options_snapshot'],
+};
+
+function jsonbSafe(table: string, row: Record<string, unknown>): Record<string, unknown> {
+  const columns = JSONB_COLUMNS[table as (typeof TABLE_ORDER)[number]];
+  if (!columns) return row;
+  const out = { ...row };
+  for (const col of columns) {
+    if (out[col] !== null && out[col] !== undefined) out[col] = JSON.stringify(out[col]);
+  }
+  return out;
+}
+
 export async function importOrdersBatch(
   db: Kysely<Database>,
   deviceId: string,
@@ -33,7 +55,7 @@ export async function importOrdersBatch(
         .insertInto(table)
         // Rows arrive as plain JSON — dates come back as ISO strings, which
         // pg/Kysely accept for a timestamptz column same as a Date would.
-        .values(rows as never[])
+        .values(rows.map((r) => jsonbSafe(table, r)) as never[])
         .onConflict((oc) => oc.column('id').doNothing())
         .execute();
 

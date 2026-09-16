@@ -32,6 +32,27 @@ const TABLE_ORDER = [
 
 const NO_UPDATED_AT = new Set(['menu_category']);
 
+// A jsonb value arrives from the sync envelope as an already-parsed
+// object/array, but pg needs JSON text for a jsonb bind param, not a plain JS
+// object. Listed explicitly per table rather than "any object" — some columns
+// (vendor.cuisine, menu_item.dietary_flags) are real Postgres text[] arrays,
+// which the driver needs as a JS array, not a JSON string.
+const JSONB_COLUMNS: Partial<Record<(typeof TABLE_ORDER)[number], string[]>> = {
+  vendor: ['operating_hours'],
+  food_court: ['operating_hours', 'config'],
+  menu_item: ['variant_groups', 'addon_groups'],
+};
+
+function jsonbSafe(table: string, row: Record<string, unknown>): Record<string, unknown> {
+  const columns = JSONB_COLUMNS[table as (typeof TABLE_ORDER)[number]];
+  if (!columns) return row;
+  const out = { ...row };
+  for (const col of columns) {
+    if (out[col] !== null && out[col] !== undefined) out[col] = JSON.stringify(out[col]);
+  }
+  return out;
+}
+
 export async function importCatalogBatch(
   db: Kysely<Database>,
   deviceId: string,
@@ -50,7 +71,7 @@ export async function importCatalogBatch(
 
       const result = await trx
         .insertInto(table)
-        .values(rows as never[])
+        .values(rows.map((r) => jsonbSafe(table, r)) as never[])
         .onConflict((oc) => {
           const withSet = oc
             .column('id')
