@@ -39,14 +39,21 @@ function jsonbSafe(table: string, row: Record<string, unknown>): Record<string, 
   return out;
 }
 
-// app_session is edge-local session/auth state and never syncs — an order's
-// app_session_id always points at a row that only exists on the device that
-// created it. The column is nullable with ON DELETE SET NULL for the same
-// reason locally, so clearing it on import is the intended shape, not a
-// workaround.
-function dropForeignSession(row: Record<string, unknown>): Record<string, unknown> {
-  if (row.app_session_id == null) return row;
-  return { ...row, app_session_id: null };
+// app_session, customer, and court_table are all edge-local today — catalog
+// sync never carries them to cloud — so an imported order's references to
+// them always point at rows cloud doesn't have. All three columns are
+// nullable, so this is a known, deliberate gap rather than a full fix:
+// cloud's copy of a synced order loses "who ordered" and "which table" until
+// customer/court_table get their own sync path. Revisit before this demo
+// becomes a real multi-device deployment.
+const DROPPED_EDGE_LOCAL_REFS = ['app_session_id', 'customer_id', 'court_table_id'];
+
+function dropEdgeLocalRefs(row: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...row };
+  for (const col of DROPPED_EDGE_LOCAL_REFS) {
+    if (out[col] != null) out[col] = null;
+  }
+  return out;
 }
 
 export async function importOrdersBatch(
@@ -61,7 +68,7 @@ export async function importOrdersBatch(
       const rows = tables[table] as Array<Record<string, unknown>> | undefined;
       if (!rows || rows.length === 0) continue;
 
-      const prepared = rows.map((r) => jsonbSafe(table, table === 'order' ? dropForeignSession(r) : r));
+      const prepared = rows.map((r) => jsonbSafe(table, table === 'order' ? dropEdgeLocalRefs(r) : r));
 
       const result = await trx
         .insertInto(table)
