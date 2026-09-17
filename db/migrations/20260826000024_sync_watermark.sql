@@ -25,10 +25,12 @@ CREATE TABLE sync_watermark (
   device_id             TEXT NOT NULL,
   domain                TEXT NOT NULL CHECK (domain IN ('orders', 'catalog')),
   direction              TEXT NOT NULL CHECK (direction IN ('export', 'import')),
-  -- Cursor state. orders uses watermark_updated_at as a created_at cursor
-  -- (order status changes are out of scope for this milestone, so created_at
-  -- is the right thing to walk forward); catalog uses it as an updated_at
-  -- cursor. watermark_row_id breaks ties when two rows share a timestamp.
+  -- Cursor state. Both orders and catalog use watermark_updated_at as an
+  -- updated_at cursor — orders originally walked created_at only (status
+  -- changes were out of scope for that milestone), but a status transition
+  -- touches updated_at without changing created_at, so the cursor moved to
+  -- updated_at once status sync was added (see export-orders.ts). watermark_row_id
+  -- breaks ties when two rows share a timestamp.
   watermark_updated_at  TIMESTAMPTZ,
   watermark_row_id      UUID,
   last_synced_at        TIMESTAMPTZ NOT NULL DEFAULT now(),

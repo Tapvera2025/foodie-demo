@@ -2,11 +2,21 @@
  * Cloud-only: applies a merged orders batch (order + order_item + payment +
  * refund rows) received from an edge device.
  *
- * Insert-only, `ON CONFLICT (id) DO NOTHING` — no merge/LWW logic, because an
- * order is immutable after creation (`assert_order_snapshots_immutable`) so
- * there is nothing to merge. Re-applying an already-seen batch (a retry after
- * a crash, say) is a safe no-op. One transaction for the whole batch, parents
- * inserted before children, so a batch either lands completely or not at all.
+ * `order_item`/`payment`/`refund` stay `ON CONFLICT (id) DO NOTHING` — those
+ * are genuinely insert-only, so re-applying an already-seen batch (a retry
+ * after a crash, say) is a safe no-op.
+ *
+ * `order` itself upserts the columns a status transition can touch (status,
+ * the per-arrival timestamps, rejection reason/note, updated_at) — the edge
+ * device re-exports the whole row on every status change (see
+ * export-orders.ts), and cloud's copy needs to reflect that, not just the
+ * row as it looked at creation. Financial/snapshot columns are left out of
+ * the update set on purpose: `assert_order_snapshots_immutable` forbids
+ * changing them after creation, and the edge side never changes them either,
+ * so there is still nothing to merge there — only status to catch up on.
+ *
+ * One transaction for the whole batch, parents inserted before children, so
+ * a batch either lands completely or not at all.
  */
 
 import type { Kysely } from 'kysely';
@@ -56,6 +66,26 @@ function dropEdgeLocalRefs(row: Record<string, unknown>): Record<string, unknown
   return out;
 }
 
+// Columns a status transition can touch (see transition.ts's STAMP/STOPS_HERE
+// and the REJECTED case) — the only columns worth re-applying on an order
+// cloud already has. Everything else is either identity (id, food_court_id,
+// ...) or a financial/snapshot column assert_order_snapshots_immutable
+// forbids changing after creation, so re-sending it would either be a no-op
+// or a rejected update.
+const ORDER_UPDATE_COLUMNS = [
+  'status',
+  'rejection_reason',
+  'rejection_note',
+  'payment_confirmed_at',
+  'dispatched_at',
+  'acknowledged_at',
+  'preparing_at',
+  'ready_at',
+  'collected_at',
+  'terminal_at',
+  'updated_at',
+] as const;
+
 export async function importOrdersBatch(
   db: Kysely<Database>,
   deviceId: string,
@@ -75,22 +105,36 @@ export async function importOrdersBatch(
         // Rows arrive as plain JSON — dates come back as ISO strings, which
         // pg/Kysely accept for a timestamptz column same as a Date would.
         .values(prepared as never[])
-        .onConflict((oc) => oc.column('id').doNothing())
+        .onConflict((oc) =>
+          table === 'order'
+            ? oc
+                .column('id')
+                .doUpdateSet((eb) =>
+                  Object.fromEntries(
+                    ORDER_UPDATE_COLUMNS.map((c) => [c, eb.ref(`excluded.${c}` as never)]),
+                  ),
+                )
+                // Last-write-wins guard, same as import-catalog.ts: a batch
+                // replayed after a crash or delivered out of order must not
+                // clobber a status cloud already applied from a later one.
+                .whereRef('excluded.updated_at' as never, '>', 'order.updated_at' as never)
+            : oc.column('id').doNothing(),
+        )
         .execute();
 
       // One InsertResult per STATEMENT (always 1 here), not per row.
       inserted[table] = Number(result[0]?.numInsertedOrUpdatedRows ?? 0n);
     }
 
-    const orderRows = tables['order'] as Array<{ created_at: string; id: string }> | undefined;
+    const orderRows = tables['order'] as Array<{ updated_at: string; id: string }> | undefined;
     if (orderRows && orderRows.length > 0) {
-      const last = orderRows[orderRows.length - 1] as { created_at: string; id: string };
+      const last = orderRows[orderRows.length - 1] as { updated_at: string; id: string };
       await new WatermarkRepository(db).set(
         trx,
         deviceId,
         'orders',
         'import',
-        { updatedAt: new Date(last.created_at), rowId: last.id },
+        { updatedAt: new Date(last.updated_at), rowId: last.id },
         orderRows.length,
       );
     }

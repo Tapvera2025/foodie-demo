@@ -1,11 +1,18 @@
 /**
- * Edge-only: reads orders created locally since the last export and publishes
- * them to cloud on `sync:{deviceId}:up`.
+ * Edge-only: reads orders created or changed locally since the last export
+ * and publishes them to cloud on `sync:{deviceId}:up`.
  *
- * One-way, insert-only by design (see migration 24's comment): an order is
- * immutable after creation (`assert_order_snapshots_immutable` in
- * db/migrations/20260810000001_init.sql), so there is no merge/conflict logic
- * here — only "has cloud seen this row yet."
+ * Walks `updated_at`, not `created_at` — migration 24 originally scoped status
+ * changes out and walked `created_at` alone, but a status move (dispatched,
+ * collected, ...) touches `updated_at` via the generic `touch_updated_at`
+ * trigger without changing `created_at`, so that cursor could never see it.
+ * `updated_at` covers both a brand-new order and a status change on cloud's
+ * copy of one it already has, since import applies the row as an upsert.
+ *
+ * Still one-way and still no merge logic: `assert_order_snapshots_immutable`
+ * (db/migrations/20260810000001_init.sql) keeps every financial/snapshot
+ * column fixed after creation, so re-sending the row is only ever "has cloud
+ * seen this current status yet," never a conflict to resolve.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -28,23 +35,29 @@ export async function exportOrders(
   const watermarks = new WatermarkRepository(db);
   const cursor = await watermarks.get(deviceId, 'orders', 'export');
 
+  // node-postgres parses timestamptz into a JS Date, which only holds
+  // millisecond precision — Postgres itself keeps microseconds. Comparing
+  // the column raw against a watermark that round-tripped through a Date
+  // compares a full-precision value against one truncated on the way out,
+  // so a row can come back "equal" in JS but still be `>` in Postgres and
+  // match forever. Truncating the column to milliseconds before comparing
+  // makes both sides the same precision Node can actually represent.
   let query = db
     .selectFrom('order')
     .selectAll()
-    .orderBy('created_at', 'asc')
+    .orderBy((eb) => eb.fn('date_trunc', [eb.val('milliseconds'), eb.ref('updated_at')]), 'asc')
     .orderBy('id', 'asc')
     .limit(MAX_ORDERS_PER_EXPORT);
 
   if (cursor.updatedAt) {
-    // created_at is a Generated<Date>, unique enough in practice; the id
-    // tiebreak only matters for two orders created in the same millisecond.
     const watermarkDate = cursor.updatedAt;
-    query = query.where((eb) =>
-      eb.or([
-        eb('created_at', '>', watermarkDate),
-        eb.and([eb('created_at', '=', watermarkDate), eb('id', '>', cursor.rowId ?? '')]),
-      ]),
-    );
+    query = query.where((eb) => {
+      const truncatedUpdatedAt = eb.fn('date_trunc', [eb.val('milliseconds'), eb.ref('updated_at')]);
+      return eb.or([
+        eb(truncatedUpdatedAt, '>', watermarkDate),
+        eb.and([eb(truncatedUpdatedAt, '=', watermarkDate), eb('id', '>', cursor.rowId ?? '')]),
+      ]);
+    });
   }
 
   const orders = await query.execute();
@@ -92,13 +105,13 @@ export async function exportOrders(
     await transport.publish(`sync:${deviceId}:up`, envelope);
   }
 
-  const last = orders[orders.length - 1] as { created_at: Date; id: string };
+  const last = orders[orders.length - 1] as { updated_at: Date; id: string };
   await watermarks.set(
     db,
     deviceId,
     'orders',
     'export',
-    { updatedAt: last.created_at, rowId: last.id },
+    { updatedAt: last.updated_at, rowId: last.id },
     orders.length,
   );
 
